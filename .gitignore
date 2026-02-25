@@ -2,3 +2,14 @@
 .pytest_cache
 .qodo
 *.egg-info
+*.pyc
+__pycache__/*
+.idea
+__pycache__
+*.log
+*.bak
+*.tmp
+*.swp
+.DS_Store
+.vscode
+*.iml
