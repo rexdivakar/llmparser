@@ -1,4 +1,4 @@
-"""blog_scraper.extractors.adaptive — Adaptive page classifier and fetch engine.
+"""llmparser.extractors.adaptive — Adaptive page classifier and fetch engine.
 
 Identifies the type of web content, selects the optimal fetch strategy, and
 falls back through a chain of strategies until content quality is acceptable.
@@ -181,7 +181,8 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
     signals = PageSignals()
 
     try:
-        from bs4 import BeautifulSoup, Tag as BSTag
+        from bs4 import BeautifulSoup
+        from bs4 import Tag as BSTag
     except ImportError:
         signals.body_word_count = _raw_word_count(html)
         return signals
@@ -202,7 +203,7 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
     # decompose() on the tag leaf does not remove those children.  We must
     # strip <template> blocks via regex BEFORE parsing.
     try:
-        from blog_scraper.extractors.main_content import _strip_cookie_consent  # noqa: PLC0415
+        from llmparser.extractors.main_content import _strip_cookie_consent  # noqa: PLC0415
         clean_html = re.sub(
             r"<template\b[^>]*>.*?</template>",
             "",
@@ -435,7 +436,7 @@ def adaptive_fetch_html(
         FetchError: Only when even the static fetch fails completely.
     """
     # Import lazily to avoid circular imports (query imports adaptive lazily too)
-    from blog_scraper.query import fetch_html as _static  # noqa: PLC0415
+    from llmparser.query import fetch_html as _static  # noqa: PLC0415
 
     # ── Step 1: Static fetch (always first) ──────────────────────────────────
     html = _static(url, timeout=timeout, user_agent=user_agent)
@@ -532,7 +533,7 @@ def _try_playwright(url: str, timeout: int = 30) -> str | None:
     """Attempt a Playwright fetch; return HTML string or None on any failure."""
     global _playwright_warned
     try:
-        from blog_scraper.query import _fetch_html_playwright  # noqa: PLC0415
+        from llmparser.query import _fetch_html_playwright  # noqa: PLC0415
         return _fetch_html_playwright(url, timeout=max(timeout, 60))
     except ImportError:
         if not _playwright_warned:

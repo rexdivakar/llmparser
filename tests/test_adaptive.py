@@ -4,16 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from blog_scraper.extractors.adaptive import (
+from llmparser.extractors.adaptive import (
     ClassificationResult,
     PageSignals,
     PageType,
     _detect_signals,
     classify_page,
 )
-from blog_scraper.extractors.main_content import _preprocess_html
+from llmparser.extractors.main_content import _preprocess_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

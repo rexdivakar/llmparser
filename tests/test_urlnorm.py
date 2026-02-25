@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from blog_scraper.extractors.urlnorm import (
+from llmparser.extractors.urlnorm import (
     extract_domain,
     is_non_content_url,
     normalize_url,

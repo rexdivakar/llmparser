@@ -1,4 +1,4 @@
-"""Tests for blog_scraper.query – single-URL fetch and extraction API."""
+"""Tests for llmparser.query – single-URL fetch and extraction API."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from blog_scraper.query import FetchError, extract, fetch, fetch_html
-from blog_scraper.items import ArticleSchema
+from llmparser.items import ArticleSchema
+from llmparser.query import FetchError, extract, fetch, fetch_html
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -200,7 +199,7 @@ class TestFetchHtml:
 
 class TestFetch:
     def _patch_fetch_html(self, html: str):
-        return patch("blog_scraper.query.fetch_html", return_value=html)
+        return patch("llmparser.query.fetch_html", return_value=html)
 
     def test_returns_article_schema(self):
         html = _read("article.html")
@@ -216,7 +215,7 @@ class TestFetch:
 
     def test_fetch_error_propagates(self):
         with patch(
-            "blog_scraper.query.fetch_html",
+            "llmparser.query.fetch_html",
             side_effect=FetchError("HTTP 404", url="https://x.com/", status=404),
         ):
             with pytest.raises(FetchError) as exc_info:
@@ -239,16 +238,16 @@ class TestFetch:
 
     def test_render_js_false_uses_urllib(self):
         html = _read("article.html")
-        with patch("blog_scraper.query.fetch_html", return_value=html) as mock_http, \
-             patch("blog_scraper.query._fetch_html_playwright") as mock_pw:
+        with patch("llmparser.query.fetch_html", return_value=html) as mock_http, \
+             patch("llmparser.query._fetch_html_playwright") as mock_pw:
             fetch("https://example.com/blog/post", render_js=False)
         mock_http.assert_called_once()
         mock_pw.assert_not_called()
 
     def test_render_js_true_uses_playwright(self):
         html = _read("article.html")
-        with patch("blog_scraper.query._fetch_html_playwright", return_value=html) as mock_pw, \
-             patch("blog_scraper.query.fetch_html") as mock_http:
+        with patch("llmparser.query._fetch_html_playwright", return_value=html) as mock_pw, \
+             patch("llmparser.query.fetch_html") as mock_http:
             fetch("https://example.com/blog/post", render_js=True)
         mock_pw.assert_called_once()
         mock_http.assert_not_called()
@@ -260,17 +259,17 @@ class TestFetch:
 
 class TestTopLevelImport:
     def test_fetch_importable_from_package(self):
-        from blog_scraper import fetch as top_fetch
+        from llmparser import fetch as top_fetch
         assert callable(top_fetch)
 
     def test_fetch_html_importable_from_package(self):
-        from blog_scraper import fetch_html as top_fetch_html
+        from llmparser import fetch_html as top_fetch_html
         assert callable(top_fetch_html)
 
     def test_extract_importable_from_package(self):
-        from blog_scraper import extract as top_extract
+        from llmparser import extract as top_extract
         assert callable(top_extract)
 
     def test_fetch_error_importable_from_package(self):
-        from blog_scraper import FetchError as TopFetchError
+        from llmparser import FetchError as TopFetchError
         assert issubclass(TopFetchError, RuntimeError)

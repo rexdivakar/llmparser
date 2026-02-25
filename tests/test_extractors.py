@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -20,38 +17,38 @@ def _read(name: str) -> str:
 
 class TestMetadataExtraction:
     def test_jsonld_title(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
-        meta = extract_metadata(article_html, "https://example.com/blog/how-to-build-a-blog-scraper")
-        assert meta["title"] == "How to Build a Blog Scraper"
+        meta = extract_metadata(article_html, "https://example.com/blog/how-to-extract-structured-content-for-llms")
+        assert meta["title"] == "How to Extract Structured Content for LLMs"
 
     def test_jsonld_author(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         assert meta["author"] == "Jane Smith"
 
     def test_og_site_name(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         assert meta["site_name"] == "Tech Blog"
 
     def test_published_at_parsed(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         assert meta["published_at"] is not None
         assert "2024-01-15" in meta["published_at"]
 
     def test_canonical_url(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
-        assert meta["canonical_url"] == "https://example.com/blog/how-to-build-a-blog-scraper"
+        assert meta["canonical_url"] == "https://example.com/blog/how-to-extract-structured-content-for-llms"
 
     def test_tags_from_og_and_jsonld(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         tags = meta["tags"]
@@ -60,13 +57,13 @@ class TestMetadataExtraction:
         assert any(t.lower() in ("python", "web-scraping", "scrapy") for t in tags)
 
     def test_language_from_html_tag(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         assert meta["language"] == "en"
 
     def test_og_image(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         images = meta["images"]
@@ -74,14 +71,14 @@ class TestMetadataExtraction:
         assert images[0]["url"] == "https://example.com/img/diagram.png"
 
     def test_summary_from_description(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         assert meta["summary"] is not None
-        assert "scraper" in meta["summary"].lower()
+        assert "llm" in meta["summary"].lower() or "content" in meta["summary"].lower()
 
     def test_raw_metadata_structure(self, article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(article_html)
         raw = meta["raw_metadata"]
@@ -91,14 +88,14 @@ class TestMetadataExtraction:
         assert raw["jsonld"].get("@type") == "Article"
 
     def test_minimal_html_no_crash(self, minimal_article_html):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata(minimal_article_html)
         assert isinstance(meta, dict)
         assert "title" in meta
 
     def test_empty_html_returns_defaults(self):
-        from blog_scraper.extractors.metadata import extract_metadata
+        from llmparser.extractors.metadata import extract_metadata
 
         meta = extract_metadata("")
         assert meta["title"] == ""
@@ -112,35 +109,35 @@ class TestMetadataExtraction:
 
 class TestArticleScoring:
     def test_article_scores_high(self, article_html):
-        from blog_scraper.extractors.heuristics import Heuristics, ARTICLE_SCORE_THRESHOLD
+        from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
 
         h = Heuristics()
-        score = h.article_score("https://example.com/blog/how-to-build-a-blog-scraper", article_html)
+        score = h.article_score("https://example.com/blog/how-to-extract-structured-content-for-llms", article_html)
         assert score >= ARTICLE_SCORE_THRESHOLD, f"Expected score >= {ARTICLE_SCORE_THRESHOLD}, got {score}"
 
     def test_listing_page_scores_low(self, listing_html):
-        from blog_scraper.extractors.heuristics import Heuristics, ARTICLE_SCORE_THRESHOLD
+        from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
 
         h = Heuristics()
         score = h.article_score("https://example.com/blog", listing_html)
         assert score < ARTICLE_SCORE_THRESHOLD, f"Expected low score, got {score}"
 
     def test_tag_page_heavily_penalised(self, listing_html):
-        from blog_scraper.extractors.heuristics import Heuristics
+        from llmparser.extractors.heuristics import Heuristics
 
         h = Heuristics()
         score = h.article_score("https://example.com/tag/python", listing_html)
         assert score < 10, f"Tag page should score < 10, got {score}"
 
     def test_minimal_article_passes_threshold(self, minimal_article_html):
-        from blog_scraper.extractors.heuristics import Heuristics, ARTICLE_SCORE_THRESHOLD
+        from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
 
         h = Heuristics()
         score = h.article_score("https://example.com/posts/a-simple-post", minimal_article_html)
         assert score >= ARTICLE_SCORE_THRESHOLD, f"Minimal article should pass: got {score}"
 
     def test_reading_time_minimum_one(self):
-        from blog_scraper.extractors.heuristics import Heuristics
+        from llmparser.extractors.heuristics import Heuristics
 
         h = Heuristics()
         assert h.reading_time(0) == 1
@@ -156,26 +153,26 @@ class TestArticleScoring:
 
 class TestJsDetection:
     def test_jsapp_detected(self, jsapp_html):
-        from blog_scraper.extractors.heuristics import Heuristics
+        from llmparser.extractors.heuristics import Heuristics
 
         h = Heuristics()
         assert h.needs_js(jsapp_html) is True
 
     def test_static_article_not_detected(self, article_html):
-        from blog_scraper.extractors.heuristics import Heuristics
+        from llmparser.extractors.heuristics import Heuristics
 
         h = Heuristics()
         assert h.needs_js(article_html) is False
 
     def test_enable_js_message_detected(self):
-        from blog_scraper.extractors.heuristics import Heuristics
+        from llmparser.extractors.heuristics import Heuristics
 
         html = "<html><body><p>Please enable JavaScript to view this site.</p></body></html>"
         h = Heuristics()
         assert h.needs_js(html) is True
 
     def test_empty_html_returns_false(self):
-        from blog_scraper.extractors.heuristics import Heuristics
+        from llmparser.extractors.heuristics import Heuristics
 
         h = Heuristics()
         assert h.needs_js("") is False
@@ -187,7 +184,7 @@ class TestJsDetection:
 
 class TestMainContentExtraction:
     def test_readability_extracts_article(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
+        from llmparser.extractors.main_content import extract_main_content
 
         result = extract_main_content(article_html, "https://example.com/blog/post")
         assert result.word_count >= 50
@@ -195,7 +192,7 @@ class TestMainContentExtraction:
         assert len(result.html) > 100
 
     def test_minimal_article_extracts_content(self, minimal_article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
+        from llmparser.extractors.main_content import extract_main_content
 
         result = extract_main_content(minimal_article_html, "https://example.com/posts/simple")
         assert result.word_count >= 20
@@ -203,7 +200,7 @@ class TestMainContentExtraction:
 
     def test_dom_heuristic_fallback(self):
         """Verify DOM heuristic works when readability/trafilatura would get sparse results."""
-        from blog_scraper.extractors.main_content import dom_heuristic_extract
+        from llmparser.extractors.main_content import dom_heuristic_extract
 
         html = """
         <html><body>
@@ -224,8 +221,8 @@ class TestMainContentExtraction:
 
 class TestContentBlocks:
     def test_headings_extracted(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.blocks import html_to_blocks
+        from llmparser.extractors.blocks import html_to_blocks
+        from llmparser.extractors.main_content import extract_main_content
 
         result = extract_main_content(article_html)
         blocks = html_to_blocks(result.html)
@@ -233,8 +230,8 @@ class TestContentBlocks:
         assert len(headings) >= 1
 
     def test_code_block_language(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.blocks import html_to_blocks
+        from llmparser.extractors.blocks import html_to_blocks
+        from llmparser.extractors.main_content import extract_main_content
 
         result = extract_main_content(article_html)
         blocks = html_to_blocks(result.html)
@@ -243,8 +240,8 @@ class TestContentBlocks:
             assert code_blocks[0].get("language") in ("python", "")
 
     def test_list_block(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.blocks import html_to_blocks
+        from llmparser.extractors.blocks import html_to_blocks
+        from llmparser.extractors.main_content import extract_main_content
 
         result = extract_main_content(article_html)
         blocks = html_to_blocks(result.html)
@@ -254,8 +251,8 @@ class TestContentBlocks:
             assert len(list_blocks[0]["items"]) > 0
 
     def test_quote_block(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.blocks import html_to_blocks
+        from llmparser.extractors.blocks import html_to_blocks
+        from llmparser.extractors.main_content import extract_main_content
 
         result = extract_main_content(article_html)
         blocks = html_to_blocks(result.html)
@@ -270,8 +267,8 @@ class TestContentBlocks:
 
 class TestMarkdownConversion:
     def test_code_fences_preserved(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.markdown import html_to_markdown
+        from llmparser.extractors.main_content import extract_main_content
+        from llmparser.extractors.markdown import html_to_markdown
 
         result = extract_main_content(article_html)
         md = html_to_markdown(result.html)
@@ -279,23 +276,23 @@ class TestMarkdownConversion:
         assert "```" in md or "import scrapy" in md
 
     def test_headings_use_atx_style(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.markdown import html_to_markdown
+        from llmparser.extractors.main_content import extract_main_content
+        from llmparser.extractors.markdown import html_to_markdown
 
         result = extract_main_content(article_html)
         md = html_to_markdown(result.html)
         assert "#" in md  # ATX-style headings
 
     def test_no_excessive_blank_lines(self, article_html):
-        from blog_scraper.extractors.main_content import extract_main_content
-        from blog_scraper.extractors.markdown import html_to_markdown
+        from llmparser.extractors.main_content import extract_main_content
+        from llmparser.extractors.markdown import html_to_markdown
 
         result = extract_main_content(article_html)
         md = html_to_markdown(result.html)
         assert "\n\n\n" not in md
 
     def test_article_markdown_format(self):
-        from blog_scraper.extractors.markdown import format_markdown_article
+        from llmparser.extractors.markdown import format_markdown_article
 
         md = format_markdown_article(
             title="Test Post",

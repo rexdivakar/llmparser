@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from blog_scraper.items import ArticleItem, ArticleSchema, article_item_to_schema
-from blog_scraper.extractors.markdown import format_markdown_article
+from llmparser.extractors.markdown import format_markdown_article
+from llmparser.items import ArticleItem, ArticleSchema, article_item_to_schema
 
 if TYPE_CHECKING:
     from scrapy.crawler import Crawler

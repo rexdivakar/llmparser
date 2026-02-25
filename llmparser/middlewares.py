@@ -1,4 +1,4 @@
-"""Scrapy downloader middlewares for blog_scraper.
+"""Scrapy downloader middlewares for llmparser.
 
 Scrapy 2.14+ compatible: middleware methods do NOT take a `spider` argument.
 Use `from_crawler()` to access spider/settings when needed.

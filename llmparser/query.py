@@ -1,4 +1,4 @@
-"""blog_scraper.query – single-URL fetch and extraction API.
+"""llmparser.query – single-URL fetch and extraction API.
 
 Lets any Python script import and call ``fetch()`` without running the
 full Scrapy crawler.  Uses only the stdlib (``urllib``) for HTTP so no
@@ -6,7 +6,7 @@ extra dependencies are required beyond those already in pyproject.toml.
 
 Basic usage::
 
-    from blog_scraper.query import fetch
+    from llmparser.query import fetch
 
     article = fetch("https://example.com/blog/some-post")
     print(article.title)
@@ -24,7 +24,7 @@ JavaScript-heavy pages::
 
 Low-level access::
 
-    from blog_scraper.query import fetch_html, extract
+    from llmparser.query import fetch_html, extract
 
     html = fetch_html("https://example.com/blog/post")
     article = extract(html, url="https://example.com/blog/post")
@@ -42,17 +42,17 @@ import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from blog_scraper.extractors.blocks import html_to_blocks
-from blog_scraper.extractors.feed import parse_feed
-from blog_scraper.extractors.main_content import (
+from llmparser.extractors.blocks import html_to_blocks
+from llmparser.extractors.feed import parse_feed
+from llmparser.extractors.heuristics import Heuristics
+from llmparser.extractors.main_content import (
     extract_images,
     extract_links,
     extract_main_content,
 )
-from blog_scraper.extractors.markdown import html_to_markdown
-from blog_scraper.extractors.metadata import extract_metadata
-from blog_scraper.extractors.heuristics import Heuristics
-from blog_scraper.items import ArticleSchema
+from llmparser.extractors.markdown import html_to_markdown
+from llmparser.extractors.metadata import extract_metadata
+from llmparser.items import ArticleSchema
 
 logger = logging.getLogger(__name__)
 
@@ -386,7 +386,7 @@ def extract(
               relative link/image resolution, and extraction hints).
 
     Returns:
-        :class:`~blog_scraper.items.ArticleSchema` with all available fields
+        :class:`~llmparser.items.ArticleSchema` with all available fields
         populated.  Fields that cannot be extracted are ``None`` or empty.
     """
     domain = urlparse(url).netloc.lower() if url else ""
@@ -403,7 +403,7 @@ def extract(
         result = extract_main_content(html, url=url)
     except Exception as exc:
         logger.warning("content extraction failed for %s: %s", url, exc)
-        from blog_scraper.extractors.main_content import ExtractionResult
+        from llmparser.extractors.main_content import ExtractionResult
         result = ExtractionResult(html=html, method="dom_heuristic", word_count=0)
 
     # Markdown
@@ -499,7 +499,7 @@ def fetch(
     timeout: int = 30,
     user_agent: str | None = None,
 ) -> ArticleSchema:
-    """Fetch *url* and return a fully-extracted :class:`~blog_scraper.items.ArticleSchema`.
+    """Fetch *url* and return a fully-extracted :class:`~llmparser.items.ArticleSchema`.
 
     This is the primary one-call API.  It fetches the page and runs the
     complete extraction pipeline (metadata, readability, trafilatura, DOM
@@ -515,7 +515,7 @@ def fetch(
                     Chrome browser UA.
 
     Returns:
-        :class:`~blog_scraper.items.ArticleSchema` instance.  Access fields
+        :class:`~llmparser.items.ArticleSchema` instance.  Access fields
         directly (``article.title``) or call ``.model_dump()`` for a ``dict``.
 
     Raises:
@@ -524,7 +524,7 @@ def fetch(
 
     Example::
 
-        from blog_scraper.query import fetch
+        from llmparser.query import fetch
 
         article = fetch("https://example.com/blog/post")
         print(article.title)
@@ -542,7 +542,7 @@ def fetch(
         return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
 
     # Adaptive engine: classify page type and select the best strategy
-    from blog_scraper.extractors.adaptive import adaptive_fetch_html  # noqa: PLC0415
+    from llmparser.extractors.adaptive import adaptive_fetch_html  # noqa: PLC0415
 
     result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent)
     article = extract(
@@ -593,7 +593,7 @@ def fetch_feed(
                       Feed entries beyond this limit are ignored.
 
     Returns:
-        List of :class:`~blog_scraper.items.ArticleSchema` instances for
+        List of :class:`~llmparser.items.ArticleSchema` instances for
         successfully fetched articles.  Failed URLs are silently skipped.
 
     Raises:
@@ -601,7 +601,7 @@ def fetch_feed(
 
     Example::
 
-        from blog_scraper import fetch_feed
+        from llmparser import fetch_feed
 
         articles = fetch_feed("https://example.com/feed.xml")
         for article in articles:
@@ -648,7 +648,7 @@ def fetch_batch(
                      ``"include"`` — include ``None`` in results for failures.
 
     Returns:
-        List of :class:`~blog_scraper.items.ArticleSchema` instances.
+        List of :class:`~llmparser.items.ArticleSchema` instances.
         With ``on_error="skip"`` the list may be shorter than *urls*.
         With ``on_error="include"`` the list has exactly ``len(urls)`` entries,
         with ``None`` for URLs that failed.
@@ -659,7 +659,7 @@ def fetch_batch(
 
     Example::
 
-        from blog_scraper import fetch_batch
+        from llmparser import fetch_batch
 
         articles = fetch_batch([
             "https://example.com/post/1",

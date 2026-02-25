@@ -1,4 +1,4 @@
-"""Scrapy project settings for blog_scraper.
+"""Scrapy project settings for llmparser.
 
 Scrapy 2.14+ compatibility notes:
 - spider argument removed from middleware/pipeline methods
@@ -12,7 +12,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Project identity
 # ---------------------------------------------------------------------------
-BOT_NAME = "blog_scraper"
+BOT_NAME = "llmparser"
 
 SPIDER_MODULES = ["spiders"]
 NEWSPIDER_MODULE = "spiders"
@@ -55,7 +55,7 @@ HTTPCACHE_IGNORE_HTTP_CODES = [500, 502, 503, 504, 408, 429]
 # User-agent
 # ---------------------------------------------------------------------------
 # Overridden per-request by RotatingUserAgentMiddleware
-USER_AGENT = "BlogScraper/1.0 (+https://github.com/user/blog-scraper)"
+USER_AGENT = "LLMParser/0.2 (+https://github.com/user/llmparser)"
 
 # ---------------------------------------------------------------------------
 # Feeds (unused – we write output ourselves in pipelines)
@@ -68,11 +68,11 @@ FEEDS: dict = {}
 DOWNLOADER_MIDDLEWARES: dict[str, int | None] = {
     # Disable the default UA middleware; ours rotates
     "scrapy.downloadermiddlewares.useragent.UserAgentMiddleware": None,
-    "blog_scraper.middlewares.RotatingUserAgentMiddleware": 400,
+    "llmparser.middlewares.RotatingUserAgentMiddleware": 400,
     # Retry middleware (keep default priority)
     "scrapy.downloadermiddlewares.retry.RetryMiddleware": 550,
     # Playwright logging (lightweight; actual rendering via download handler)
-    "blog_scraper.middlewares.PlaywrightLoggingMiddleware": 650,
+    "llmparser.middlewares.PlaywrightLoggingMiddleware": 650,
 }
 
 # ---------------------------------------------------------------------------
@@ -80,17 +80,17 @@ DOWNLOADER_MIDDLEWARES: dict[str, int | None] = {
 # ---------------------------------------------------------------------------
 ITEM_PIPELINES: dict[str, int] = {
     # 150: drop exact-duplicate content before validation
-    "blog_scraper.pipelines.ContentHashDedupPipeline": 150,
-    "blog_scraper.pipelines.ArticleValidationPipeline": 200,
-    "blog_scraper.pipelines.ArticleWriterPipeline": 300,
-    "blog_scraper.pipelines.IndexWriterPipeline": 400,
+    "llmparser.pipelines.ContentHashDedupPipeline": 150,
+    "llmparser.pipelines.ArticleValidationPipeline": 200,
+    "llmparser.pipelines.ArticleWriterPipeline": 300,
+    "llmparser.pipelines.IndexWriterPipeline": 400,
 }
 
 # ---------------------------------------------------------------------------
 # Scrapy extensions
 # ---------------------------------------------------------------------------
 EXTENSIONS: dict[str, int] = {
-    "blog_scraper.extensions.RichProgressExtension": 500,
+    "llmparser.extensions.RichProgressExtension": 500,
 }
 
 # ---------------------------------------------------------------------------

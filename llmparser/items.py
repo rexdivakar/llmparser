@@ -7,7 +7,6 @@ from typing import Any, Optional
 import scrapy
 from pydantic import BaseModel, Field, field_validator
 
-
 # ---------------------------------------------------------------------------
 # Scrapy Item
 # ---------------------------------------------------------------------------

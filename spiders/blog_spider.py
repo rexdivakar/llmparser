@@ -25,23 +25,22 @@ from urllib.parse import urljoin, urlparse
 
 import scrapy
 from bs4 import BeautifulSoup
-from scrapy.http import Request, Response
-
-from blog_scraper.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
-from blog_scraper.extractors.main_content import (
+from llmparser.extractors.blocks import html_to_blocks
+from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
+from llmparser.extractors.main_content import (
     ExtractionResult,
     extract_images,
     extract_links,
     extract_main_content,
 )
-from blog_scraper.extractors.markdown import html_to_markdown
-from blog_scraper.extractors.metadata import extract_metadata
-from blog_scraper.extractors.blocks import html_to_blocks
-from blog_scraper.extractors.urlnorm import (
+from llmparser.extractors.markdown import html_to_markdown
+from llmparser.extractors.metadata import extract_metadata
+from llmparser.extractors.urlnorm import (
     is_non_content_url,
     normalize_url,
 )
-from blog_scraper.items import ArticleItem
+from llmparser.items import ArticleItem
+from scrapy.http import Request, Response
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,7 @@ _HARD_EXCLUDE_PATTERNS: tuple[re.Pattern, ...] = tuple(
     ]
 )
 
-# Soft-exclude patterns live in blog_scraper.extractors.heuristics and are
+# Soft-exclude patterns live in llmparser.extractors.heuristics and are
 # applied during article scoring (not during link discovery).
 
 

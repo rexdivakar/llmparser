@@ -19,7 +19,7 @@ Threshold: **≥ 35** → treat as article and attempt extraction.
 | Date in URL path | +10 | `\d{4}/\d{2}(/\d{2})?` in path |
 | Long slug (≥4 path segments) | +5 | e.g. `/en/blog/2024/my-great-post` |
 | Single-segment path (home/about/etc) | −20 | Path depth ≤ 1 |
-| Excluded path pattern | −30 | Path contains `/tag/`, `/tags/`, `/category/`, `/categories/`, `/search`, `/login`, `/signup`, `/register`, `/privacy`, `/terms`, `/contact`, `/about`, `/archive`, `/archives`, `/feed`, `/rss`, `/sitemap` |
+| Excluded path pattern | −30 | Path contains `/tag/`, `/tags/`, `/category/`, `/categories/`, `/search`, `/login`, `/signup`, `/register`, `/privacy`, `/terms`, `/contact`, `/about`, `/archive`, `/archives/`, `/feed`, `/rss`, `/sitemap` |
 | Paginated URL | −15 | Path ends with `/page/\d+` or query `page=\d+` |
 | Author listing | −10 | Path contains `/author/` with no further slug |
 
@@ -52,11 +52,89 @@ Threshold: **≥ 35** → treat as article and attempt extraction.
 
 ---
 
-## 2. JS Rendering Detection
+## 2. Adaptive Page Classification
+
+**Module:** `llmparser/extractors/adaptive.py`
+
+**Functions:**
+- `_detect_signals(html, url) → PageSignals`
+- `classify_page(html, url) → ClassificationResult`
+- `adaptive_fetch_html(url) → AdaptiveFetchResult`
+
+### PageSignals
+
+Computed from a single HTML parse:
+
+| Signal | Type | How computed |
+|--------|------|--------------|
+| `body_word_count` | `int` | Words in `<body>` after stripping `<nav>`, `<header>`, `<footer>`, `<script>`, `<style>`, `<template>` |
+| `is_js_spa` | `bool` | JS framework root div present + sparse text, OR ultra-thin body (<10 words) + external scripts |
+| `is_cookie_walled` | `bool` | Cookie/GDPR overlay keywords detected in visible text |
+| `is_paywalled` | `bool` | Paywall keywords + metered content signals |
+| `frameworks_detected` | `list[str]` | Named JS frameworks identified from fingerprints |
+| `amp_url` | `str\|None` | `<link rel="amphtml" href="...">` |
+| `feed_url` | `str\|None` | `<link rel="alternate" type="application/rss+xml">` |
+
+### JS SPA Detection (two paths)
+
+**Path A — Framework fingerprints** (higher confidence):
+
+```python
+_JS_FRAMEWORK_FINGERPRINTS = {
+    "Next.js":   [("script", "src", "/_next/"), ("div", "id", "__next")],
+    "React":     [("div", "id", "root"), ("div", "id", "react-root")],
+    "Vue":       [("div", "id", "app"), ("div", "id", "__nuxt")],
+    "Angular":   [("app-root", None, None), ("div", "ng-app", None)],
+    "Gatsby":    [("div", "id", "gatsby-focus-wrapper")],
+    "Svelte":    [("div", "id", "svelte")],
+    "Ember":     [("div", "id", "ember"), ("body", "class", "ember-application")],
+}
+# Triggered when ANY fingerprint matches AND body_word_count < 200
+```
+
+**Path B — Ultra-thin body** (catches custom builds, VFS Global-style apps):
+
+```python
+# Triggered when:
+body_word_count < 10  AND  bool(soup.find("script", src=True))
+# No known framework required
+```
+
+### Classification Rules (in priority order)
+
+| Condition | PageType | Strategy | Confidence |
+|-----------|----------|----------|------------|
+| `is_cookie_walled` | `COOKIE_WALLED` | `playwright` | 0.85 |
+| `is_paywalled` | `PAYWALLED` | `playwright` | 0.75 |
+| `is_js_spa` AND `amp_url` present | `JS_SPA` | `amp` | 0.90 |
+| `is_js_spa` with named framework | `JS_SPA` | `playwright` | 0.90 |
+| `is_js_spa` (ultra-thin path) | `JS_SPA` | `playwright` | 0.80 |
+| `body_word_count >= 150` | `STATIC_HTML` | `static` | 0.90 |
+| `body_word_count >= 50` | `STATIC_HTML` | `mobile_ua` | 0.70 |
+| All else | `UNKNOWN` | `static_best_effort` | 0.50 |
+
+### Adaptive Strategy Flow
+
+```
+adaptive_fetch_html(url)
+    │
+    ├─ 1. Fetch HTML via urllib (static)
+    ├─ 2. classify_page(html, url)
+    │
+    ├─ strategy == "static"          → return html as-is
+    ├─ strategy == "amp"             → fetch amp_url via urllib
+    ├─ strategy == "mobile_ua"       → re-fetch with mobile User-Agent
+    ├─ strategy == "playwright"      → _fetch_html_playwright(url)  [4-phase]
+    └─ strategy == "static_best_effort" → return html with partial content warning
+```
+
+---
+
+## 3. JS Rendering Detection (Spider heuristic)
 
 **Function:** `heuristics.needs_js(html: str, threshold_words: int = 100) -> bool`
 
-Returns `True` if the page almost certainly requires JavaScript to render its content.
+Used by the Scrapy spider (not the adaptive engine). Returns `True` if the page almost certainly requires JavaScript.
 
 ### Detection Signals (any one triggers True)
 
@@ -71,7 +149,6 @@ Returns `True` if the page almost certainly requires JavaScript to render its co
 ```
 
 #### Signal 2: JS framework root + sparse text
-
 ```python
 JS_ROOT_SELECTORS = [
     '#__next',        # Next.js
@@ -84,25 +161,20 @@ JS_ROOT_SELECTORS = [
     '[data-server-rendered]',
     'div[ng-app]',
 ]
-
-has_js_root = any(soup.select(sel) for sel in JS_ROOT_SELECTORS)
-# AND text is sparse (after removing scripts/styles/nav/header/footer)
-word_count < threshold_words (default 100)
+# AND word_count < threshold_words (default 100)
 ```
 
 #### Signal 3: Heavy scripts + near-empty body
-
 ```python
 script_count = len(soup.find_all('script', src=True))
-script_count > 8 AND word_count < 50
+# True if: script_count > 8 AND word_count < 50
 ```
 
 #### Signal 4: Meaningful noscript content
-
 ```python
 for noscript in soup.find_all('noscript'):
     if len(noscript.get_text().split()) > 20:
-        return True  # noscript has actual message content
+        return True
 ```
 
 ### False positive mitigation
@@ -114,15 +186,69 @@ for noscript in soup.find_all('noscript'):
 
 ---
 
-## 3. Fallback DOM Selection
+## 4. Content Extraction Cascade
+
+**Module:** `llmparser/extractors/main_content.py`
+
+### Pre-processing (before any extractor)
+
+1. **`<template>` removal** — regex strip before BS4 parsing (lxml re-parents template children into body; `decompose()` alone is insufficient)
+2. **Cookie-consent removal** — 30+ named CSS selectors (CookieYes, Cookiebot, OneTrust, Complianz, Borlabs, WP GDPR, generic) plus keyword sweep for dynamically-named widgets
+
+### Extractor Thresholds
+
+| Extractor | Minimum words to be considered successful |
+|-----------|------------------------------------------|
+| readability-lxml | 50 |
+| trafilatura | 30 |
+| DOM heuristic | 10 |
+
+### Best-of-Two Selection Logic
+
+```python
+r_wc = word_count(readability_output)
+t_wc = word_count(trafilatura_output)
+
+if r_wc >= 50 and t_wc >= 30:
+    if t_wc >= r_wc * 1.4:
+        return trafilatura   # ≥40% more words → prefer trafilatura
+    return readability       # readability wins otherwise
+
+if r_wc >= 50: return readability
+if t_wc >= 30: return trafilatura
+
+# Both failed → DOM heuristic
+```
+
+**Why 1.4×?** Avoids switching on minor noise differences. Trafilatura wins only when it meaningfully outperforms readability — typically on multi-section service pages where readability fixates on one content block.
+
+### DOM Heuristic: Full-Body Fallback Rule
+
+After paragraph-density scoring of all `<div>`/`<section>` elements:
+
+```python
+top_wc = len(top_element.get_text().split())
+body_wc = len(body.get_text().split())
+
+if top_wc / body_wc >= 0.55:
+    return str(top_element)   # One element dominates: return it
+else:
+    return str(body)          # Content spread equally: return full body
+```
+
+This prevents missing content on pages where multiple sections carry equal weight (wikis, service portals, documentation pages).
+
+---
+
+## 5. Fallback DOM Selection
 
 **Function:** `main_content.dom_heuristic_extract(html: str) -> str`
 
-Applied when readability-lxml AND trafilatura both fail or return < 30 words.
+Applied when readability-lxml AND trafilatura both fail or return < threshold words.
 
 ### Step 1: Priority Selector Cascade
 
-Try these CSS selectors in order; pick the first match with ≥ 50 words:
+Try these CSS selectors in order; pick the first match with ≥ 10 words:
 
 ```
 article
@@ -142,13 +268,15 @@ main
 .content-body
 .story-body
 .blog-post
+.post
+.single-content
 ```
 
 Before selection, decompose (remove from DOM):
 - `<nav>`, `<header>`, `<footer>`, `<aside>`
 - `<script>`, `<style>`, `<noscript>`
-- `<form>`, `<button>`, `<input>`
-- Elements with class/id containing: `sidebar`, `comment`, `advertisement`, `ad-`, `promo`, `related`, `share`, `social`, `newsletter`
+- `<form>`, `<button>`, `<input>`, `<select>`, `<textarea>`
+- Elements with class/id containing: `sidebar`, `comment`, `advertisement`, `banner`, `promo`, `related`, `share`, `social`, `newsletter`, `cookie`, `popup`, `modal`, `widget`
 
 ### Step 2: Paragraph Density Scoring
 
@@ -161,45 +289,51 @@ density         = paragraph_words / max(total_words, 1)
 score           = paragraph_words * density
 ```
 
-Pick the element with the highest score that has ≥ 50 paragraph words.
-
-Exclude elements that are ancestors of already-chosen elements (de-nest).
+Pick the highest-scoring element with ≥ 10 paragraph words, then apply the 55% body-dominance rule (see §4 above).
 
 ### Step 3: Body Fallback
 
-If nothing found with ≥ 50 words, return the full `<body>` element.
+If nothing found with ≥ 10 words, return the full `<body>` element.
 If no body, return the original HTML unchanged.
 
 ---
 
-## 4. URL Filtering Rules
+## 6. URL Filtering Rules
 
-### Include (crawl this URL)
+### Hard-exclude (never crawled, even for link discovery)
 
-- Same domain/host as `start_url`
-- Content-type is HTML (determined by extension or response header)
-- Optional `--include-regex` matches
+```
+/_next/static/
+/cdn-cgi/
+/wp-content/uploads/
+/__webpack
+/wp-json/
+/wp-admin/
+/xmlrpc.php
+.amp(?|$)      ← AMP duplicate URLs
+```
 
-### Exclude (skip without processing)
+### Soft-exclude (crawled for links, but scored low for extraction)
 
-Excluded if path contains any of:
+Applied via article scoring penalties (see §1):
 ```
 /tag/   /tags/   /category/   /categories/
 /search  /login   /signup   /register
-/privacy  /terms   /contact   /about  (only if exact path, not prefix)
+/privacy  /terms   /contact   /about
 /archive  /archives  /feed  /rss  /sitemap
-/cdn-cgi/  /__webpack  /_next/static  /wp-content/uploads
 ```
 
-Excluded by extension: `.pdf`, `.jpg`, `.jpeg`, `.png`, `.gif`, `.svg`, `.webp`,
-`.css`, `.js`, `.woff`, `.woff2`, `.ttf`, `.ico`, `.xml` (unless sitemap),
+### Excluded by extension
+
+`.pdf`, `.jpg`, `.jpeg`, `.png`, `.gif`, `.svg`, `.webp`,
+`.css`, `.js`, `.woff`, `.woff2`, `.ttf`, `.ico`,
 `.zip`, `.tar`, `.gz`
 
-Optional `--exclude-regex` applied after built-in rules.
+Optional `--exclude-regex` applied after all built-in rules.
 
 ---
 
-## 5. Reading Time Calculation
+## 7. Reading Time Calculation
 
 ```python
 WORDS_PER_MINUTE = 200
@@ -208,11 +342,26 @@ reading_time_minutes = max(1, math.ceil(word_count / WORDS_PER_MINUTE))
 
 ---
 
-## 6. Language Detection
+## 8. Language Detection
 
 Determined in priority order:
 1. `<html lang="...">` attribute
-2. `og:locale` (convert `en_US` → `en`)
+2. `og:locale` (converts `en_US` → `en`)
 3. JSON-LD `inLanguage` field
 4. `<meta http-equiv="content-language">` or `<meta name="language">`
 5. `None` if undetermined (do not guess)
+
+---
+
+## 9. Content Deduplication
+
+**Pipeline:** `ContentHashDedupPipeline` (priority 100, before validation)
+
+```python
+digest = hashlib.sha256(content_text[:5_000].encode()).hexdigest()[:16]
+# Drop if digest already seen this crawl session
+```
+
+- Only applied when `len(content_text) >= 100` (too-short content is left to the validation pipeline)
+- Catches syndicated posts and canonical URL mismatches
+- Hash is a 16-char SHA-256 prefix (1-in-2^64 collision probability)

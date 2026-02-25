@@ -1,4 +1,4 @@
-"""CLI entry point: python -m blog_scraper --url URL [options]"""
+"""CLI entry point: python -m llmparser --url URL [options]"""
 
 from __future__ import annotations
 
@@ -10,15 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Tell Scrapy which settings module to use (read during Settings() init).
-os.environ.setdefault("SCRAPY_SETTINGS_MODULE", "blog_scraper.settings")
+os.environ.setdefault("SCRAPY_SETTINGS_MODULE", "llmparser.settings")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="blog_scraper",
+        prog="llmparser",
         description=(
-            "Crawl a blog domain and extract structured article content.\n"
-            "No LLMs. No external databases. Polite crawling by default."
+            "Parse any website and extract structured, LLM-ready content.\n"
+            "Adaptive engine — static, Playwright, AMP, RSS. No LLMs required."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -124,7 +124,7 @@ def _print_banner(args: argparse.Namespace) -> None:
         console = Console()
         console.print(
             Panel.fit(
-                f"[bold cyan]Blog Scraper[/bold cyan]\n"
+                f"[bold cyan]LLMParser[/bold cyan]\n"
                 f"URL:            [green]{args.url}[/green]\n"
                 f"Output:         [yellow]{args.out}[/yellow]\n"
                 f"Max pages:      {args.max_pages}\n"
@@ -141,7 +141,7 @@ def _print_banner(args: argparse.Namespace) -> None:
             )
         )
     except ImportError:
-        print(f"Blog Scraper | URL: {args.url} | Out: {args.out}")
+        print(f"LLMParser | URL: {args.url} | Out: {args.out}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         from scrapy.settings import Settings
-        from blog_scraper import settings as settings_module
+
+        from llmparser import settings as settings_module
     except ImportError as exc:
         print(f"ERROR: Could not import Scrapy: {exc}", file=sys.stderr)
         print("Run: pip install -e .", file=sys.stderr)
@@ -273,10 +274,10 @@ def _load_skipped(out_dir: Path) -> list[dict]:
 
 def _print_summary(out_dir: Path) -> None:
     try:
-        from rich.console import Console
-        from rich.table import Table
-        from rich.rule import Rule
         from rich import box
+        from rich.console import Console
+        from rich.rule import Rule
+        from rich.table import Table
 
         console = Console()
         articles = _load_index(out_dir)

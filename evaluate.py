@@ -12,12 +12,12 @@ Playwright is used automatically when needed:
     playwright install chromium
 """
 
-from blog_scraper import FetchError, fetch
-from blog_scraper.extractors.adaptive import classify_page, PageType
-from blog_scraper.items import ArticleSchema
+from llmparser import FetchError, fetch
+from llmparser.extractors.adaptive import PageType
+from llmparser.items import ArticleSchema
 
 # ── change this URL to evaluate any page ──────────────────────────────────────
-URL = "https://services.vfsglobal.com/usa/en/ind/apply-passport"
+URL = "https://claude.com/blog/how-ai-helps-break-cost-barrier-cobol-modernization"
 # ──────────────────────────────────────────────────────────────────────────────
 
 SEP = "-" * 72
@@ -44,7 +44,7 @@ _TYPE_LABELS = {
 def _print_analysis(article: ArticleSchema, pre_html: str, pre_url: str) -> None:
     """Print the page-type analysis section."""
     try:
-        from blog_scraper.extractors.adaptive import classify_page, PageSignals
+        from llmparser.extractors.adaptive import classify_page
         classification = classify_page(pre_html, pre_url)
         sig = classification.signals
     except Exception:
@@ -128,7 +128,7 @@ except Exception as exc:
 # Show the page-analysis section (re-uses the static HTML for classification display;
 # the adaptive engine already did the real classification during fetch())
 try:
-    from blog_scraper.query import fetch_html as _fetch_html
+    from llmparser.query import fetch_html as _fetch_html
     _pre_html = _fetch_html(URL)
     _print_analysis(article, _pre_html, URL)
 except Exception:

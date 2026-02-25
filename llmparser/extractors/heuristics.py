@@ -143,7 +143,7 @@ class Heuristics:
         return score
 
     def _url_score(self, url: str) -> int:
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import parse_qs, urlparse
 
         score = 0
         parsed = urlparse(url)

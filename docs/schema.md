@@ -8,8 +8,10 @@ out/
 │   ├── <slug>.json          # Full structured data per article
 │   ├── <slug>.md            # Markdown rendering of the article
 │   └── ...
-├── index.json               # Summary list of all scraped articles
-└── skipped.jsonl            # JSONL log of skipped URLs with reasons
+├── index.json               # Summary list, sorted by published_at descending
+├── index.csv                # Same summary as CSV (spreadsheet / pandas ready)
+├── skipped.jsonl            # JSONL log of skipped URLs with reasons
+└── summary.txt              # Plain-text crawl report
 ```
 
 Slug is derived from the URL path: `/blog/how-to-scrape` → `blog-how-to-scrape`.
@@ -52,6 +54,11 @@ class ArticleSchema(BaseModel):
 
     # Provenance
     extraction_method_used: str       # "readability" | "trafilatura" | "dom_heuristic"
+    fetch_strategy: Optional[str]     # "static" | "amp" | "mobile_ua" | "playwright" |
+                                      # "playwright_forced" | "playwright_fallback" |
+                                      # "static_best_effort"
+    page_type: Optional[str]          # "static_html" | "js_spa" | "cookie_walled" |
+                                      # "paywalled" | "unknown"
     article_score: int                # 0-100 heuristic score
     scraped_at: str                   # ISO 8601 UTC timestamp
 
@@ -120,9 +127,19 @@ class ArticleSchema(BaseModel):
   "twitter": {
     "twitter:title": "...",
     "twitter:creator": "@author"
+  },
+  "_classification": {
+    "reason": "Static HTML — 842 body words, no JS framework signals",
+    "confidence": 0.95,
+    "frameworks": [],
+    "amp_url": null,
+    "feed_url": "/feed.xml",
+    "body_word_count": 842
   }
 }
 ```
+
+The `_classification` key is present when `fetch()` uses the adaptive engine (i.e. `render_js=False`, the default). It contains the classification signals used to select the fetch strategy — no second HTTP request is needed to display this information.
 
 ---
 
@@ -130,23 +147,23 @@ class ArticleSchema(BaseModel):
 
 ```json
 {
-  "url": "https://example.com/blog/how-to-build-a-scraper",
-  "canonical_url": "https://example.com/blog/how-to-build-a-scraper",
-  "title": "How to Build a Blog Scraper",
+  "url": "https://example.com/blog/extracting-structured-content-for-llms",
+  "canonical_url": "https://example.com/blog/extracting-structured-content-for-llms",
+  "title": "Extracting Structured Content for LLMs",
   "author": "Jane Smith",
   "published_at": "2024-01-15T10:00:00+00:00",
   "updated_at": "2024-01-16T08:00:00+00:00",
   "site_name": "Tech Blog",
   "language": "en",
   "tags": ["python", "web-scraping", "scrapy"],
-  "summary": "A comprehensive guide to building a production-quality blog scraper.",
-  "content_markdown": "# How to Build a Blog Scraper\n\nBuilding a blog scraper...\n\n## Getting Started\n\n...",
-  "content_text": "How to Build a Blog Scraper Building a blog scraper is a fascinating challenge...",
+  "summary": "A comprehensive guide to extracting structured, LLM-ready content from any website.",
+  "content_markdown": "# Extracting Structured Content for LLMs\n\nLLMParser makes any website readable by language models...\n\n## Getting Started\n\n...",
+  "content_text": "Extracting Structured Content for LLMs LLMParser makes any website readable by language models...",
   "content_blocks": [
-    {"type": "heading", "level": 1, "text": "How to Build a Blog Scraper"},
-    {"type": "paragraph", "text": "Building a blog scraper is a fascinating challenge..."},
+    {"type": "heading", "level": 1, "text": "Extracting Structured Content for LLMs"},
+    {"type": "paragraph", "text": "LLMParser makes any website readable by language models..."},
     {"type": "heading", "level": 2, "text": "Getting Started"},
-    {"type": "code", "language": "python", "text": "import scrapy\n\nclass BlogSpider(scrapy.Spider):\n    ..."}
+    {"type": "code", "language": "python", "text": "from llmparser import fetch\n\narticle = fetch('https://example.com/blog/post')\nprint(article.content_markdown)"}
   ],
   "images": [
     {"url": "https://example.com/img/diagram.png", "alt": "Architecture diagram", "caption": "Figure 1"}
@@ -157,12 +174,22 @@ class ArticleSchema(BaseModel):
   "word_count": 842,
   "reading_time_minutes": 5,
   "extraction_method_used": "readability",
+  "fetch_strategy": "static",
+  "page_type": "static_html",
   "article_score": 72,
   "scraped_at": "2024-02-24T12:00:00+00:00",
   "raw_metadata": {
-    "jsonld": {"@type": "Article", "headline": "How to Build a Blog Scraper"},
-    "og": {"og:title": "How to Build a Blog Scraper", "og:type": "article"},
-    "twitter": {}
+    "jsonld": {"@type": "Article", "headline": "Extracting Structured Content for LLMs"},
+    "og": {"og:title": "Extracting Structured Content for LLMs", "og:type": "article"},
+    "twitter": {},
+    "_classification": {
+      "reason": "Static HTML — 842 body words",
+      "confidence": 0.95,
+      "frameworks": [],
+      "amp_url": null,
+      "feed_url": "/feed.xml",
+      "body_word_count": 842
+    }
   }
 }
 ```
@@ -172,25 +199,25 @@ class ArticleSchema(BaseModel):
 ## Markdown Output Format
 
 ```markdown
-# How to Build a Blog Scraper
+# Extracting Structured Content for LLMs
 
 **Author:** Jane Smith
 **Published:** 2024-01-15T10:00:00+00:00
 **Tags:** python, web-scraping, scrapy
 
-> A comprehensive guide to building a production-quality blog scraper.
+> A comprehensive guide to extracting structured, LLM-ready content from any website.
 
 ---
 
-Building a blog scraper is a fascinating challenge...
+LLMParser makes any website readable by language models...
 
 ## Getting Started
 
 ```python
-import scrapy
+from llmparser import fetch
 
-class BlogSpider(scrapy.Spider):
-    ...
+article = fetch("https://example.com/blog/post")
+print(article.content_markdown)
 ```
 
 ```
@@ -204,9 +231,9 @@ Array of summary objects, sorted by `published_at` descending (unparseable dates
 ```json
 [
   {
-    "slug": "blog-how-to-build-a-scraper",
-    "url": "https://example.com/blog/how-to-build-a-scraper",
-    "title": "How to Build a Blog Scraper",
+    "slug": "blog-extracting-structured-content-for-llms",
+    "url": "https://example.com/blog/extracting-structured-content-for-llms",
+    "title": "Extracting Structured Content for LLMs",
     "author": "Jane Smith",
     "published_at": "2024-01-15T10:00:00+00:00",
     "summary": "A comprehensive guide...",
@@ -218,6 +245,16 @@ Array of summary objects, sorted by `published_at` descending (unparseable dates
 ]
 ```
 
+## Index CSV (`out/index.csv`)
+
+Same fields as `index.json`, one row per article.  Load directly with:
+
+```python
+import pandas as pd
+df = pd.read_csv("out/index.csv")
+df.sort_values("word_count", ascending=False).head(10)
+```
+
 ---
 
 ## Skipped URLs Log (`out/skipped.jsonl`)
@@ -227,4 +264,22 @@ One JSON object per line:
 ```jsonl
 {"url": "https://example.com/tag/python", "reason": "low_article_score (12)", "timestamp": "2024-02-24T12:00:00+00:00"}
 {"url": "https://example.com/page/2", "reason": "excluded_pattern (/page/)", "timestamp": "2024-02-24T12:01:00+00:00"}
+{"url": "https://example.com/short", "reason": "content too short (<10 words)", "timestamp": "2024-02-24T12:02:00+00:00"}
 ```
+
+---
+
+## FeedEntry (from `fetch_feed` / `parse_feed`)
+
+`llmparser.extractors.feed.FeedEntry` is a `NamedTuple`:
+
+```python
+class FeedEntry(NamedTuple):
+    url: str              # Article URL
+    title: str            # Entry title
+    author: str | None    # Author (dc:creator in RSS, <author><name> in Atom)
+    published_at: str | None  # pubDate (RSS) or <published> (Atom) — raw string
+    summary: str | None   # <description> (RSS) or <summary>/<content> (Atom)
+```
+
+`published_at` is the raw string from the feed; it is **not** normalized to ISO 8601 at the feed-parse level. After `fetch_feed()` calls `fetch()` on each URL, the resulting `ArticleSchema.published_at` will be normalized by `dateparser`.

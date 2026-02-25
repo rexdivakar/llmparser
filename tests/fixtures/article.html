@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>How to Build a Blog Scraper | Tech Blog</title>
-  <meta name="description" content="A comprehensive guide to building a production-quality blog scraper.">
+  <title>How to Extract Structured Content for LLMs | Tech Blog</title>
+  <meta name="description" content="A comprehensive guide to extracting clean, structured content from any website so LLMs can parse and understand it.">
   <meta name="author" content="Jane Smith">
-  <meta property="og:title" content="How to Build a Blog Scraper">
-  <meta property="og:description" content="A comprehensive guide to building a production-quality blog scraper.">
+  <meta property="og:title" content="How to Extract Structured Content for LLMs">
+  <meta property="og:description" content="A comprehensive guide to extracting clean, structured content from any website so LLMs can parse and understand it.">
   <meta property="og:site_name" content="Tech Blog">
   <meta property="og:type" content="article">
   <meta property="og:image" content="https://example.com/img/diagram.png">
@@ -16,17 +16,17 @@
   <meta property="article:author" content="Jane Smith">
   <meta property="article:tag" content="python">
   <meta property="article:tag" content="web-scraping">
-  <link rel="canonical" href="https://example.com/blog/how-to-build-a-blog-scraper">
+  <link rel="canonical" href="https://example.com/blog/how-to-extract-structured-content-for-llms">
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "Article",
-    "headline": "How to Build a Blog Scraper",
+    "headline": "How to Extract Structured Content for LLMs",
     "author": {"@type": "Person", "name": "Jane Smith"},
     "datePublished": "2024-01-15T10:00:00Z",
     "dateModified": "2024-01-16T08:00:00Z",
-    "description": "A comprehensive guide to building a production-quality blog scraper.",
-    "keywords": "python, web-scraping, scrapy"
+    "description": "A comprehensive guide to extracting clean, structured content from any website so LLMs can parse and understand it.",
+    "keywords": "python, web-scraping, llm, content-extraction"
   }
   </script>
 </head>
@@ -37,68 +37,65 @@
     <a href="/about">About</a>
   </nav>
   <article>
-    <h1>How to Build a Blog Scraper</h1>
+    <h1>How to Extract Structured Content for LLMs</h1>
     <p class="byline">By Jane Smith | January 15, 2024</p>
 
-    <p>Building a blog scraper is a fascinating challenge that combines web crawling,
-    HTML parsing, and content extraction techniques. In this guide, we'll walk through
-    building a production-quality system that works on any blog without site-specific
-    selectors.</p>
+    <p>Feeding an LLM raw HTML is wasteful and noisy. The goal of LLMParser is to
+    extract clean, structured content from any website so language models can parse
+    and understand it efficiently — without site-specific selectors or manual rules.</p>
 
     <h2>Getting Started</h2>
 
-    <p>First, you need to understand the structure of the blog you want to scrape.
-    The key insight is that blogs, despite their visual variety, all have similar
-    structural patterns: a title, some metadata, and a body of content.</p>
+    <p>The key insight is that websites, despite their visual variety, all have similar
+    structural patterns: a title, some metadata, and a body of content. LLMParser
+    identifies and extracts these patterns deterministically.</p>
 
-    <pre><code class="language-python">import scrapy
+    <pre><code class="language-python">from llmparser import fetch
 
-class BlogSpider(scrapy.Spider):
-    name = 'blog'
-    start_urls = ['https://example.com/blog']
-
-    def parse(self, response):
-        for article in response.css('article'):
-            yield {'title': article.css('h1::text').get()}
+article = fetch("https://example.com/blog/post")
+print(article.title)
+print(article.content_markdown)   # clean Markdown ready for LLM context
+print(article.content_blocks)     # structured typed blocks
 </code></pre>
 
-    <h2>Handling Different Templates</h2>
+    <h2>Handling Different Page Types</h2>
 
-    <p>Different blogs use different page templates. The key is to use deterministic
-    algorithms rather than site-specific CSS selectors. This approach ensures your
-    scraper works across thousands of different blog designs.</p>
+    <p>Different sites render content differently. The adaptive engine classifies each
+    page as Static HTML, JS SPA, Cookie-walled, or Paywalled, then selects the optimal
+    fetch strategy automatically — no configuration required.</p>
 
     <ul>
-      <li>Use readability-lxml for main content extraction</li>
-      <li>Fall back to trafilatura if readability fails</li>
-      <li>Use DOM heuristics as a last resort</li>
+      <li>Static HTML: fast urllib fetch, no browser overhead</li>
+      <li>JS SPA: Playwright headless Chromium with 4-phase rendering wait</li>
+      <li>AMP: fetch the lightweight AMP URL instead of the main page</li>
+      <li>RSS/Atom: parse the feed and extract each linked article</li>
     </ul>
 
-    <h2>Extracting Metadata</h2>
+    <h2>Structured Output for LLMs</h2>
 
-    <p>Most modern blogs include rich metadata in JSON-LD, Open Graph, or Twitter Card
-    format. By parsing these structured data sources first, we can reliably extract
-    the title, author, publication date, and tags without scraping the visual HTML.</p>
+    <p>Most modern websites include rich metadata in JSON-LD, Open Graph, or Twitter Card
+    format. LLMParser combines these with extracted article content to produce a clean
+    Pydantic schema — title, author, date, tags, Markdown body, and typed content blocks.</p>
 
     <blockquote>
-      <p>The best scrapers are the ones that work on any site without modification.</p>
+      <p>The best parsers are the ones that work on any site without modification.</p>
     </blockquote>
 
     <h2>Performance Considerations</h2>
 
-    <p>When scraping at scale, you need to be polite to the servers you're crawling.
-    Use Scrapy's AutoThrottle middleware to automatically adjust your crawl speed
-    based on server latency. Respect robots.txt and add appropriate delays between
-    requests.</p>
+    <p>When parsing at scale, you need to be polite to the servers you are crawling.
+    LLMParser uses Scrapy's AutoThrottle middleware to automatically adjust crawl speed
+    based on server latency, respects robots.txt, and honours Retry-After headers on
+    rate-limited responses.</p>
 
     <figure>
       <img src="https://example.com/img/diagram.png" alt="Architecture diagram">
-      <figcaption>Figure 1: Blog scraper architecture</figcaption>
+      <figcaption>Figure 1: LLMParser adaptive engine architecture</figcaption>
     </figure>
 
-    <p>With these techniques, you can build a scraper that reliably extracts content
-    from virtually any blog on the internet, regardless of its technical stack or
-    visual design.</p>
+    <p>With these techniques, LLMParser reliably extracts content from virtually any
+    website on the internet, regardless of its technical stack or visual design,
+    delivering clean structured data ready for LLM consumption.</p>
   </article>
   <footer>
     <p>&copy; 2024 Tech Blog</p>
