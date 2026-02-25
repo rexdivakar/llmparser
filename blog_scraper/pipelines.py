@@ -6,7 +6,9 @@ take a `spider` argument.  Spider identity is not needed at runtime.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import logging
 import re
@@ -305,3 +307,16 @@ class IndexWriterPipeline:
             len(entries),
             self.index_path,
         )
+
+        # Write CSV index alongside JSON for easy import into spreadsheets / pandas
+        csv_path = self.index_path.with_suffix(".csv")
+        try:
+            buf = io.StringIO()
+            if entries:
+                writer = csv.DictWriter(buf, fieldnames=list(entries[0].keys()), extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(entries)
+            csv_path.write_text(buf.getvalue(), encoding="utf-8")
+            logger.info("IndexWriterPipeline: wrote CSV index → %s", csv_path)
+        except Exception as exc:
+            logger.warning("Could not write CSV index: %s", exc)

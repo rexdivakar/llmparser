@@ -13,11 +13,11 @@ Playwright is used automatically when needed:
 """
 
 from blog_scraper import FetchError, fetch
-from blog_scraper.extractors.adaptive import PageType
+from blog_scraper.extractors.adaptive import classify_page, PageType
 from blog_scraper.items import ArticleSchema
 
 # ── change this URL to evaluate any page ──────────────────────────────────────
-URL = "https://9to5linux.com/clonezilla-live-3-3-1-released-with-linux-6-18-lts-improved-bitlocker-support"
+URL = "https://services.vfsglobal.com/usa/en/ind/apply-passport"
 # ──────────────────────────────────────────────────────────────────────────────
 
 SEP = "-" * 72
@@ -41,29 +41,25 @@ _TYPE_LABELS = {
 }
 
 
-def _print_analysis(article: ArticleSchema) -> None:
-    """Print the page-type analysis section from embedded classification signals.
-
-    Classification data is embedded in raw_metadata['_classification'] by
-    fetch() — no second HTTP request needed.
-    """
-    clf = article.raw_metadata.get("_classification") if article.raw_metadata else None
+def _print_analysis(article: ArticleSchema, pre_html: str, pre_url: str) -> None:
+    """Print the page-type analysis section."""
+    try:
+        from blog_scraper.extractors.adaptive import classify_page, PageSignals
+        classification = classify_page(pre_html, pre_url)
+        sig = classification.signals
+    except Exception:
+        return
 
     print("\nPAGE ANALYSIS")
-    type_label = _TYPE_LABELS.get(article.page_type or "", article.page_type or "—")
-    confidence_str = f" (confidence: {clf['confidence']:.0%})" if clf else ""
-    print(f"  Type       : {type_label}{confidence_str}")
+    print(f"  Type       : {_TYPE_LABELS.get(article.page_type or '', article.page_type or '—')} "
+          f"(confidence: {classification.confidence:.0%})")
     print(f"  Strategy   : {_STRATEGY_LABELS.get(article.fetch_strategy or '', article.fetch_strategy or '—')}")
-
-    if clf:
-        fw = ", ".join(clf["frameworks"]) if clf.get("frameworks") else "—"
-        print(f"  Reason     : {clf['reason']}")
-        print(f"  Frameworks : {fw}")
-        print(f"  AMP URL    : {clf.get('amp_url') or '—'}")
-        print(f"  Feed URL   : {clf.get('feed_url') or '—'}")
-        print(f"  Body words : {clf.get('body_word_count', '—')} (raw, pre-extraction)")
-    else:
-        print("  (No classification signals — render_js=True was used)")
+    print(f"  Reason     : {classification.reason}")
+    fw = ", ".join(sig.frameworks_detected) if sig.frameworks_detected else "—"
+    print(f"  Frameworks : {fw}")
+    print(f"  AMP URL    : {sig.amp_url or '—'}")
+    print(f"  Feed URL   : {sig.feed_url or '—'}")
+    print(f"  Body words : {sig.body_word_count} (raw, pre-extraction)")
 
 
 def _print_article(article: ArticleSchema) -> None:
@@ -129,7 +125,15 @@ except Exception as exc:
     print(f"[ERROR] Unexpected error fetching {URL!r}: {exc}")
     raise SystemExit(1) from exc
 
-_print_analysis(article)
+# Show the page-analysis section (re-uses the static HTML for classification display;
+# the adaptive engine already did the real classification during fetch())
+try:
+    from blog_scraper.query import fetch_html as _fetch_html
+    _pre_html = _fetch_html(URL)
+    _print_analysis(article, _pre_html, URL)
+except Exception:
+    pass  # Analysis display is best-effort; don't block the article output
+
 _print_article(article)
 
 # # As a plain dict (JSON-serialisable)

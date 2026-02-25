@@ -154,15 +154,43 @@ class BlogSpider(scrapy.Spider):
 
     def _load_seen_urls(self) -> set[str]:
         """Load seen URLs from disk for resume (#2). Returns empty set if not resuming."""
-        if not self._seen_urls_path or not self._seen_urls_path.exists():
+        if not self._seen_urls_path:
             return set()
-        try:
-            urls = set(self._seen_urls_path.read_text(encoding="utf-8").splitlines())
-            logger.info("Resume: loaded %d previously-seen URLs", len(urls))
-            return urls
-        except OSError as exc:
-            logger.warning("Could not read seen_urls.txt: %s", exc)
-            return set()
+
+        urls: set[str] = set()
+
+        # Load incremental seen list from previous run
+        if self._seen_urls_path.exists():
+            try:
+                urls = set(self._seen_urls_path.read_text(encoding="utf-8").splitlines())
+                logger.info("Resume: loaded %d URLs from seen_urls.txt", len(urls))
+            except OSError as exc:
+                logger.warning("Could not read seen_urls.txt: %s", exc)
+
+        # Also load already-extracted article URLs from index.json so they are
+        # never re-fetched even across independent crawl sessions (cross-crawl dedup).
+        index_path = self._seen_urls_path.parent / "index.json"
+        if index_path.exists():
+            try:
+                entries = json.loads(index_path.read_text(encoding="utf-8"))
+                index_urls = {
+                    normalize_url(e["url"])
+                    for e in entries
+                    if isinstance(e, dict) and e.get("url")
+                }
+                before = len(urls)
+                urls |= index_urls
+                added = len(urls) - before
+                if added:
+                    logger.info(
+                        "Resume: loaded %d new URLs from index.json (total: %d)",
+                        added,
+                        len(urls),
+                    )
+            except Exception as exc:
+                logger.warning("Could not read index.json for cross-crawl dedup: %s", exc)
+
+        return urls
 
     def _mark_seen(self, norm: str) -> None:
         """Add URL to seen set and persist it for resume (#2, #9)."""
@@ -442,6 +470,34 @@ class BlogSpider(scrapy.Spider):
                     exc,
                 )
                 return
+
+        # Follow rel="next" pagination links from <head> at higher priority
+        # so paginated archives are traversed fully before other BFS links.
+        for link_el in soup.find_all("link", rel=True):
+            rel_val = link_el.get("rel")
+            if isinstance(rel_val, list) and "next" in rel_val:
+                href = str(link_el.get("href") or "").strip()
+                if not href:
+                    continue
+                try:
+                    absolute = urljoin(response.url, href)
+                except Exception:
+                    continue
+                norm = normalize_url(absolute)
+                if norm in self._seen_urls:
+                    continue
+                if not self._should_crawl(absolute):
+                    continue
+                if self._pages_crawled >= self.max_pages:
+                    return
+                self._mark_seen(norm)
+                self._pages_crawled += 1
+                yield self._make_request(
+                    absolute,
+                    callback=self.parse,
+                    meta={"depth": current_depth + 1},
+                    priority=5,  # Higher than regular BFS (default 0)
+                )
 
         for a in soup.find_all("a", href=True):
             href = str(a.get("href") or "").strip()

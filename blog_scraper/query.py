@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from blog_scraper.extractors.blocks import html_to_blocks
+from blog_scraper.extractors.feed import parse_feed
 from blog_scraper.extractors.main_content import (
     extract_images,
     extract_links,
@@ -175,10 +176,19 @@ def fetch_html(
 
         except urllib.error.HTTPError as exc:
             if exc.code in _RETRY_CODES and attempt < max_retries:
-                delay = (2 ** attempt) + random.uniform(0, 1)
+                # Honour Retry-After header (RFC 7231 §7.1.3) when present.
+                # Servers set this on 429 and some 503 responses.
+                retry_after = 0
+                try:
+                    ra_header = exc.headers.get("Retry-After", "") if exc.headers else ""
+                    retry_after = int(ra_header) if ra_header and ra_header.strip().isdigit() else 0
+                except Exception:
+                    retry_after = 0
+                delay = max(retry_after, 2 ** attempt) + random.uniform(0, 1)
                 logger.debug(
-                    "HTTP %d for %s — retrying in %.1fs (attempt %d/%d)",
+                    "HTTP %d for %s — retrying in %.1fs (attempt %d/%d)%s",
                     exc.code, url, delay, attempt + 1, max_retries,
+                    f" [Retry-After={retry_after}s]" if retry_after else "",
                 )
                 time.sleep(delay)
                 last_exc = FetchError(
@@ -553,6 +563,60 @@ def fetch(
         "body_word_count": sig.body_word_count,
     }
     return article
+
+
+# ---------------------------------------------------------------------------
+# Feed API
+# ---------------------------------------------------------------------------
+
+def fetch_feed(
+    feed_url: str,
+    *,
+    timeout: int = 30,
+    user_agent: str | None = None,
+    max_articles: int = 50,
+) -> list[ArticleSchema]:
+    """Fetch an RSS/Atom feed and extract each linked article.
+
+    Fetches the feed XML, parses all ``<item>``/``<entry>`` elements, then
+    calls :func:`fetch` on each linked URL.  Useful for consuming a site's
+    feed directly without full BFS crawling.
+
+    The adaptive engine is used for each article — JS-heavy pages are
+    automatically rendered via Playwright when needed.
+
+    Args:
+        feed_url:     Fully-qualified RSS or Atom feed URL.
+        timeout:      Per-request network timeout in seconds (default 30).
+        user_agent:   Custom User-Agent string for all requests.
+        max_articles: Maximum number of articles to fetch (default 50).
+                      Feed entries beyond this limit are ignored.
+
+    Returns:
+        List of :class:`~blog_scraper.items.ArticleSchema` instances for
+        successfully fetched articles.  Failed URLs are silently skipped.
+
+    Raises:
+        :class:`FetchError`: If the feed URL itself cannot be fetched.
+
+    Example::
+
+        from blog_scraper import fetch_feed
+
+        articles = fetch_feed("https://example.com/feed.xml")
+        for article in articles:
+            print(article.title, article.word_count)
+    """
+    xml_text = fetch_html(feed_url, timeout=timeout, user_agent=user_agent)
+    entries = parse_feed(xml_text, base_url=feed_url)
+
+    if not entries:
+        logger.warning("fetch_feed: no entries found in feed %s", feed_url)
+        return []
+
+    logger.info("fetch_feed: %d entries in %s", len(entries), feed_url)
+    urls = [e.url for e in entries[:max_articles]]
+    return fetch_batch(urls, timeout=timeout, user_agent=user_agent, on_error="skip")
 
 
 # ---------------------------------------------------------------------------
