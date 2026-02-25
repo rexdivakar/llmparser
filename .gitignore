@@ -1,0 +1,4 @@
+.claude
+.pytest_cache
+.qodo
+*.egg-info
