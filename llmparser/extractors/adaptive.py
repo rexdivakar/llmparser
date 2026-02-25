@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ _NOISE_TAGS = ("script", "style", "nav", "header", "footer", "noscript", "aside"
 # Data classes
 # ---------------------------------------------------------------------------
 
-class PageType(str, Enum):
+class PageType(StrEnum):
     STATIC_HTML   = "static_html"
     JS_SPA        = "js_spa"
     COOKIE_WALLED = "cookie_walled"
@@ -500,7 +500,7 @@ def adaptive_fetch_html(
 
     # ── Step 5: Playwright fallback (thin static that slipped through) ────────
     if (
-        strategy not in ("playwright",)
+        strategy != "playwright"
         and classification.signals.body_word_count < _MIN_CONTENT_WORDS
     ):
         pw_html = _try_playwright(url, timeout=timeout)

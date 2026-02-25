@@ -32,12 +32,12 @@ _STRATEGY_LABELS = {
     "static_best_effort":  "Static HTTP — best effort (partial content)",
 }
 
-_TYPE_LABELS = {
-    PageType.STATIC_HTML.value:   "Static HTML",
-    PageType.JS_SPA.value:        "JavaScript SPA",
-    PageType.COOKIE_WALLED.value: "Cookie / GDPR wall",
-    PageType.PAYWALLED.value:     "Paywalled",
-    PageType.UNKNOWN.value:       "Unknown",
+_TYPE_LABELS: dict[str, str] = {
+    PageType.STATIC_HTML:   "Static HTML",
+    PageType.JS_SPA:        "JavaScript SPA",
+    PageType.COOKIE_WALLED: "Cookie / GDPR wall",
+    PageType.PAYWALLED:     "Paywalled",
+    PageType.UNKNOWN:       "Unknown",
 }
 
 

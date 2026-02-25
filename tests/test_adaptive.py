@@ -147,7 +147,7 @@ class TestClassifyPage:
         result = classify_page(article_html)
         assert isinstance(result, ClassificationResult)
         assert isinstance(result.signals, PageSignals)
-        assert result.page_type in list(PageType)
+        assert isinstance(result.page_type, PageType)
         assert 0.0 <= result.confidence <= 1.0
         assert result.reason
         assert result.recommended_strategy

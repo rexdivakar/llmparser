@@ -113,7 +113,7 @@ def _process_element(el: Tag, base_url: str, blocks: list[dict]) -> None:
     if tag_name == "pre":
         lang = _extract_code_language(el)
         code_el = el.find("code")
-        text = (code_el if code_el else el).get_text()
+        text = (code_el or el).get_text()
         blocks.append({"type": "code", "language": lang, "text": text})
         return
 
