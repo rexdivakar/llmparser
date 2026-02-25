@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import xml.etree.ElementTree as ET  # for ET.ParseError only
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -248,7 +247,7 @@ class BlogSpider(scrapy.Spider):
 
         try:
             root = defused_ET.fromstring(body)
-        except ET.ParseError:
+        except defused_ET.ParseError:
             logger.debug("Sitemap at %s is not valid XML", response.url)
             return
 
@@ -303,7 +302,8 @@ class BlogSpider(scrapy.Spider):
             self._log_skip(url, f"http_status_{response.status}")
             return
 
-        ct = response.headers.get(b"Content-Type", b"").decode("utf-8", errors="ignore").lower()
+        ct_bytes: bytes = response.headers.get(b"Content-Type") or b""
+        ct = ct_bytes.decode("utf-8", errors="ignore").lower()
         if "html" not in ct and ct:
             self._log_skip(url, f"non_html_content_type ({ct})")
             return

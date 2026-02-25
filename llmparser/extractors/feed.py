@@ -14,11 +14,13 @@ Supports:
 from __future__ import annotations
 
 import logging
-import xml.etree.ElementTree as ET  # for ET.ParseError only
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import urljoin
 
 import defusedxml.ElementTree as defused_ET
+
+if TYPE_CHECKING:
+    import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +154,7 @@ def parse_feed(xml_text: str, base_url: str = "") -> list[FeedEntry]:
     """
     try:
         root = defused_ET.fromstring(xml_text)
-    except ET.ParseError as exc:
+    except defused_ET.ParseError as exc:
         logger.warning("Feed XML parse error: %s", exc)
         return []
 
