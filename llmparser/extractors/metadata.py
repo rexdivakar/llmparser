@@ -7,12 +7,15 @@ Priority chain (highest → lowest):
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import dateparser
 from bs4 import BeautifulSoup, Tag
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,8 +55,8 @@ def _parse_date(raw: str | None) -> str | None:
             if not (1990 <= parsed.year <= 2099):
                 return None
             return parsed.isoformat()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Date parse failed for %r: %s", raw, exc)
     return None
 
 
@@ -79,7 +82,7 @@ _ARTICLE_TYPES: frozenset[str] = frozenset(
         "scholarlyarticle",
         "liveblogposting",
         "reportage",
-    }
+    },
 )
 
 
@@ -150,7 +153,7 @@ def _extract_og_twitter(soup: BeautifulSoup) -> tuple[dict, dict]:
         if not content:
             continue
         prop_lower = prop.lower()
-        if prop_lower.startswith("og:") or prop_lower.startswith("article:"):
+        if prop_lower.startswith(("og:", "article:")):
             og[prop_lower] = content
         elif prop_lower.startswith("twitter:"):
             twitter[prop_lower] = content
@@ -195,7 +198,7 @@ def _extract_tags(jsonld: dict, soup: BeautifulSoup) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _extract_canonical(soup: BeautifulSoup, page_url: str) -> str | None:
-    # Search for <link rel="canonical"> – rel is a multi-valued list in BS4
+    # Search for <link rel="canonical"> - rel is a multi-valued list in BS4
     for link in soup.find_all("link"):
         if not isinstance(link, Tag):
             continue
@@ -325,11 +328,9 @@ def extract_metadata(
 
     # ---- author ----
     author_meta = soup.find("meta", attrs={"name": "author"})
-    author_from_meta = (
-        _safe_str(author_meta.get("content"), "").strip()  # type: ignore[union-attr]
-        if author_meta and isinstance(author_meta, Tag)
-        else None
-    )
+    author_from_meta = None
+    if author_meta and isinstance(author_meta, Tag):
+        author_from_meta = _safe_str(author_meta.get("content"), "").strip()
     author = _first(
         _author_from_jsonld(jsonld),
         og.get("article:author"),
@@ -339,25 +340,23 @@ def extract_metadata(
 
     # ---- dates ----
     pubdate_meta = soup.find("meta", attrs={"name": "pubdate"})
-    pubdate_raw = (
-        _safe_str(pubdate_meta.get("content"), "")  # type: ignore[union-attr]
-        if pubdate_meta and isinstance(pubdate_meta, Tag)
-        else None
-    )
+    pubdate_raw = None
+    if pubdate_meta and isinstance(pubdate_meta, Tag):
+        pubdate_raw = _safe_str(pubdate_meta.get("content"), "")
     published_at = _parse_date(
         _first(
             jsonld.get("datePublished"),
             og.get("article:published_time"),
             pubdate_raw,
             _extract_time_datetime(soup),
-        )
+        ),
     )
     updated_at = _parse_date(
         _first(
             jsonld.get("dateModified"),
             og.get("article:modified_time"),
             og.get("og:updated_time"),
-        )
+        ),
     )
 
     # ---- site name ----
@@ -371,11 +370,9 @@ def extract_metadata(
 
     # ---- summary ----
     desc_meta = soup.find("meta", attrs={"name": "description"})
-    desc_from_meta = (
-        _safe_str(desc_meta.get("content"), "").strip()  # type: ignore[union-attr]
-        if desc_meta and isinstance(desc_meta, Tag)
-        else None
-    )
+    desc_from_meta = None
+    if desc_meta and isinstance(desc_meta, Tag):
+        desc_from_meta = _safe_str(desc_meta.get("content"), "").strip()
     summary = _first(
         jsonld.get("description"),
         og.get("og:description"),

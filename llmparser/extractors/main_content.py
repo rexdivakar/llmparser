@@ -7,6 +7,7 @@ Tier 3: DOM heuristic     (paragraph density + priority CSS selectors)
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import NamedTuple
@@ -117,12 +118,10 @@ def _strip_cookie_consent(soup: BeautifulSoup) -> None:
     """Remove cookie-consent / GDPR overlay elements from *soup* in-place."""
     # Named selectors first (fast, specific)
     for selector in _COOKIE_CONSENT_SELECTORS:
-        try:
+        with contextlib.suppress(Exception):
             for el in soup.select(selector):
                 if isinstance(el, Tag):
                     el.decompose()
-        except Exception:
-            pass
 
     # Keyword sweep — catches dynamically-named widgets
     for el in list(soup.find_all(True)):
@@ -149,15 +148,13 @@ def _preprocess_html(html: str) -> str:
     # Regex pass first — removes <template>…</template> including all content.
     # Must happen before BS4/lxml parsing because lxml moves template children
     # into the document body, making decompose() ineffective on the container.
-    try:
+    with contextlib.suppress(Exception):
         html = re.sub(
             r"<template\b[^>]*>.*?</template>",
             "",
             html,
             flags=re.DOTALL | re.IGNORECASE,
         )
-    except Exception:
-        pass
 
     try:
         soup = BeautifulSoup(html, "lxml")
@@ -235,7 +232,7 @@ def _is_noisy_element(tag: Tag) -> bool:
             " ".join(tag.get("class") or []),
             str(tag.get("id") or ""),
             str(tag.get("role") or ""),
-        ]
+        ],
     ).lower()
     return any(noise in combined for noise in _NOISE_SUBSTRINGS)
 
@@ -277,7 +274,8 @@ def dom_heuristic_extract(html: str) -> str:
     for selector in _CONTENT_SELECTORS:
         try:
             elements = soup.select(selector)
-        except Exception:
+        except Exception as exc:
+            logger.debug("CSS selector %r failed: %s", selector, exc)
             continue
         if not elements:
             continue
@@ -328,7 +326,7 @@ def extract_main_content(html: str, url: str = "") -> ExtractionResult:
 
     Strategy:
       1. Run readability-lxml AND trafilatura independently.
-      2. If trafilatura returns ≥ 1.4× more words than readability, prefer it —
+      2. If trafilatura returns >= 1.4x more words than readability, prefer it -
          this handles multi-section service/portal pages where readability
          fixates on one content block and discards the rest.
       3. Use whichever of readability/trafilatura met its minimum threshold.
@@ -336,9 +334,9 @@ def extract_main_content(html: str, url: str = "") -> ExtractionResult:
          dominates, preserving equal-weight sections).
 
     Returns an ExtractionResult namedtuple:
-        html       – extracted HTML fragment
-        method     – "readability" | "trafilatura" | "dom_heuristic"
-        word_count – approximate word count of extracted text
+        html       - extracted HTML fragment
+        method     - "readability" | "trafilatura" | "dom_heuristic"
+        word_count - approximate word count of extracted text
     """
     # Pre-process: strip cookie-consent / GDPR overlays before any extractor
     html = _preprocess_html(html)
@@ -351,30 +349,57 @@ def extract_main_content(html: str, url: str = "") -> ExtractionResult:
     t_wc = _count_words(t_content) if t_content else 0
 
     logger.debug(
-        "readability=%d words  trafilatura=%d words  url=%s", r_wc, t_wc, url
+        "readability=%d words  trafilatura=%d words  url=%s", r_wc, t_wc, url,
     )
 
     # Both extractors produced usable content — pick the richer one.
     if r_wc >= _READABILITY_MIN_WORDS and t_wc >= _TRAFILATURA_MIN_WORDS:
-        # Trafilatura gets the nod when it yields ≥ 40 % more words.
-        # Threshold of 1.4× avoids switching on minor noise differences.
+        # Trafilatura gets the nod when it yields >= 40 % more words.
+        # Threshold of 1.4x avoids switching on minor noise differences.
         if t_wc >= r_wc * 1.4:
             logger.debug("trafilatura wins (%d vs %d words) for %s", t_wc, r_wc, url)
-            return ExtractionResult(html=t_content, method="trafilatura", word_count=t_wc)  # type: ignore[arg-type]
+            assert t_content is not None  # r_wc>0 implies t_content was truthy
+            return ExtractionResult(html=t_content, method="trafilatura", word_count=t_wc)
         logger.debug("readability wins (%d vs %d words) for %s", r_wc, t_wc, url)
-        return ExtractionResult(html=r_content, method="readability", word_count=r_wc)  # type: ignore[arg-type]
+        assert r_content is not None  # r_wc>0 implies r_content was truthy
+        return ExtractionResult(html=r_content, method="readability", word_count=r_wc)
 
     # Only one extractor succeeded.
     if r_wc >= _READABILITY_MIN_WORDS:
-        return ExtractionResult(html=r_content, method="readability", word_count=r_wc)  # type: ignore[arg-type]
+        assert r_content is not None  # r_wc>0 implies r_content was truthy
+        return ExtractionResult(html=r_content, method="readability", word_count=r_wc)
     if t_wc >= _TRAFILATURA_MIN_WORDS:
-        return ExtractionResult(html=t_content, method="trafilatura", word_count=t_wc)  # type: ignore[arg-type]
+        assert t_content is not None  # t_wc>0 implies t_content was truthy
+        return ExtractionResult(html=t_content, method="trafilatura", word_count=t_wc)
 
     # Tier 3: DOM heuristic (handles pages both extractors can't parse)
     content = dom_heuristic_extract(html)
     wc = _count_words(content)
     logger.debug("dom_heuristic extracted %d words from %s", wc, url)
-    return ExtractionResult(html=content, method="dom_heuristic", word_count=wc)
+    result = ExtractionResult(html=content, method="dom_heuristic", word_count=wc)
+
+    # Tier 4: Extractor plugins (tried after built-in cascade)
+    try:
+        from llmparser.plugins import get_extractors
+        for plugin in sorted(get_extractors(), key=lambda p: p.priority, reverse=True):
+            if plugin.can_extract(html, url):
+                try:
+                    plugin_html = plugin.extract(html, url)
+                    if plugin_html:
+                        plugin_wc = _count_words(plugin_html)
+                        if plugin_wc > result.word_count:
+                            result = ExtractionResult(
+                                html=plugin_html,
+                                method=plugin.name,
+                                word_count=plugin_wc,
+                            )
+                            break
+                except Exception as exc:
+                    logger.warning("Extractor plugin %s failed: %s", plugin.name, exc)
+    except Exception as exc:
+        logger.debug("Error iterating extractor plugins: %s", exc)
+
+    return result
 
 
 def extract_images(html: str, base_url: str = "") -> list[dict]:
@@ -439,7 +464,7 @@ def extract_links(html: str, base_url: str = "", base_domain: str = "") -> list[
         if not isinstance(a, Tag):
             continue
         href = str(a.get("href") or "").strip()
-        if not href or href.startswith("#") or href.startswith("mailto:"):
+        if not href or href.startswith(("#", "mailto:")):
             continue
 
         if base_url:
@@ -455,7 +480,7 @@ def extract_links(html: str, base_url: str = "", base_domain: str = "") -> list[
 
         try:
             is_internal = bool(
-                base_domain and urlparse(href).netloc.lower() == base_domain.lower()
+                base_domain and urlparse(href).netloc.lower() == base_domain.lower(),
             )
         except Exception:
             is_internal = False

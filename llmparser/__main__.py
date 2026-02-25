@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import logging
 import os
+import re
 import sys
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # Tell Scrapy which settings module to use (read during Settings() init).
 os.environ.setdefault("SCRAPY_SETTINGS_MODULE", "llmparser.settings")
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -53,7 +60,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-subdomains", action="store_true", default=False,
                         help="Crawl subdomains of the start URL's domain (e.g. docs.example.com)")
     parser.add_argument("--extra-domains", default=None, metavar="DOMAINS",
-                        help="Comma-separated extra domains to crawl (e.g. 'blog.example.com,news.example.com')")
+                        help=(
+                            "Comma-separated extra domains to crawl "
+                            "(e.g. 'blog.example.com,news.example.com')"
+                        ))
     parser.add_argument("--progress", action="store_true", default=False,
                         help="Show a live Rich progress bar (sets log-level to WARNING)")
     return parser
@@ -61,15 +71,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _validate_regex_args(args: argparse.Namespace) -> str | None:
     """Return an error message if any regex flags are invalid, else None."""
-    import re as _re
     for flag, pattern in [
         ("--include-regex", args.include_regex),
         ("--exclude-regex", args.exclude_regex),
     ]:
         if pattern:
             try:
-                _re.compile(pattern)
-            except _re.error as exc:
+                re.compile(pattern)
+            except re.error as exc:
                 return f"Invalid {flag} pattern {pattern!r}: {exc}"
     return None
 
@@ -85,12 +94,13 @@ def _check_playwright_available() -> bool:
             browser_type = p.chromium
             if not browser_type.executable_path:
                 return False
-        return True
     except Exception:
         return False
+    else:
+        return True
 
 
-def _configure_playwright(scrapy_settings: object) -> bool:
+def _configure_playwright(scrapy_settings: Any) -> bool:
     """Add Playwright download handlers to *scrapy_settings* if available.
 
     Returns True if successfully configured, False if Playwright is unavailable.
@@ -98,7 +108,7 @@ def _configure_playwright(scrapy_settings: object) -> bool:
     if not _check_playwright_available():
         return False
     try:
-        scrapy_settings.set(  # type: ignore[union-attr]
+        scrapy_settings.set(
             "DOWNLOAD_HANDLERS",
             {
                 "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
@@ -106,14 +116,15 @@ def _configure_playwright(scrapy_settings: object) -> bool:
             },
             priority="cmdline",
         )
-        scrapy_settings.set(  # type: ignore[union-attr]
+        scrapy_settings.set(
             "TWISTED_REACTOR",
             "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
             priority="cmdline",
         )
-        return True
     except Exception:
         return False
+    else:
+        return True
 
 
 def _print_banner(args: argparse.Namespace) -> None:
@@ -138,7 +149,7 @@ def _print_banner(args: argparse.Namespace) -> None:
                 f"Extra domains:  {args.extra_domains or '—'}",
                 border_style="cyan",
                 title="[bold]Configuration[/bold]",
-            )
+            ),
         )
     except ImportError:
         print(f"LLMParser | URL: {args.url} | Out: {args.out}")
@@ -189,9 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cache:
         scrapy_settings.set("HTTPCACHE_ENABLED", True, priority="cmdline")
         scrapy_settings.set(
-            "HTTPCACHE_DIR", str(out_dir / ".httpcache"), priority="cmdline"
+            "HTTPCACHE_DIR", str(out_dir / ".httpcache"), priority="cmdline",
         )
-        logging.info("HTTP cache enabled → %s", out_dir / ".httpcache")
+        logger.info("HTTP cache enabled -> %s", out_dir / ".httpcache")
 
     # --- #6 Live progress bar ---
     if args.progress:
@@ -209,9 +220,9 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         elif not playwright_enabled:
-            logging.info(
+            logger.info(
                 "Playwright not available; JS rendering disabled. "
-                "Install with: playwright install chromium"
+                "Install with: playwright install chromium",
             )
 
     try:
@@ -233,8 +244,8 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,                           # #2
         )
         process.start()
-    except Exception as exc:
-        logging.error("Scraper failed: %s", exc, exc_info=True)
+    except Exception:
+        logger.exception("Scraper failed")
         return 1
 
     _print_summary(out_dir)
@@ -243,7 +254,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _load_index(out_dir: Path) -> list[dict]:
-    import json
     index_path = out_dir / "index.json"
     if not index_path.exists():
         return []
@@ -254,21 +264,18 @@ def _load_index(out_dir: Path) -> list[dict]:
 
 
 def _load_skipped(out_dir: Path) -> list[dict]:
-    import json
     skipped_path = out_dir / "skipped.jsonl"
     if not skipped_path.exists():
         return []
     entries: list[dict] = []
     try:
-        for line in skipped_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+        for raw_line in skipped_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw_line.strip()
+            if stripped:
+                with contextlib.suppress(Exception):
+                    entries.append(json.loads(stripped))
+    except Exception as exc:
+        logger.debug("Failed to read skipped.jsonl: %s", exc)
     return entries
 
 
@@ -303,7 +310,10 @@ def _print_summary(out_dir: Path) -> None:
         console.print(f"  [bold]Total words        :[/bold] {total_words:,}")
         console.print(f"  [bold]Total reading time :[/bold] {total_read} min")
         console.print(f"  [bold]Output directory   :[/bold] [green]{out_dir}[/green]")
-        console.print(f"  [bold]Summary file       :[/bold] [green]{out_dir / 'summary.txt'}[/green]")
+        summary_file = out_dir / "summary.txt"
+        console.print(
+            f"  [bold]Summary file       :[/bold] [green]{summary_file}[/green]",
+        )
         console.print()
 
         # ── Articles table ───────────────────────────────────────────────────
@@ -354,8 +364,8 @@ def _print_summary(out_dir: Path) -> None:
                 )
             console.print(stbl)
 
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Rich summary display failed: %s", exc)
 
 
 def _write_summary_txt(out_dir: Path) -> None:
@@ -374,7 +384,7 @@ def _write_summary_txt(out_dir: Path) -> None:
 
     total_words = sum(e.get("word_count", 0) for e in articles)
     total_read  = sum(e.get("reading_time_minutes", 0) for e in articles)
-    now         = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now         = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     lines: list[str] = []
 
@@ -408,7 +418,6 @@ def _write_summary_txt(out_dir: Path) -> None:
 
     # Breakdown by extraction method
     if articles:
-        from collections import Counter
         methods = Counter(e.get("extraction_method_used", "unknown") for e in articles)
         h2("Extraction method breakdown")
         for method, count in methods.most_common():
@@ -416,7 +425,6 @@ def _write_summary_txt(out_dir: Path) -> None:
 
     # Breakdown of skip reasons
     if deduped_skipped:
-        from collections import Counter
         reasons = Counter(s.get("reason", "unknown") for s in deduped_skipped)
         h2("Skip reason breakdown")
         for reason, count in reasons.most_common():
@@ -428,7 +436,7 @@ def _write_summary_txt(out_dir: Path) -> None:
         col_w = 6
         lines.append(
             f"  {'#':>{col_w}}  {'Title':<50}  {'Author':<20}  "
-            f"{'Published':<12}  {'Words':>6}  {'Read':>5}  {'Method':<14}  URL"
+            f"{'Published':<12}  {'Words':>6}  {'Read':>5}  {'Method':<14}  URL",
         )
         lines.append("  " + "-" * 160)
         for i, e in enumerate(articles, 1):
@@ -441,7 +449,7 @@ def _write_summary_txt(out_dir: Path) -> None:
             url       = e.get("url", "-")
             lines.append(
                 f"  {i:>{col_w}}  {title:<50}  {author:<20}  "
-                f"{published:<12}  {words:>6}  {read:>4}m  {method:<14}  {url}"
+                f"{published:<12}  {words:>6}  {read:>4}m  {method:<14}  {url}",
             )
     else:
         lines.append("  (none)")
@@ -474,7 +482,7 @@ def _write_summary_txt(out_dir: Path) -> None:
         if path.is_file() and path.name != "summary.txt":
             rel = path.relative_to(out_dir)
             size_kb = path.stat().st_size / 1024
-            lines.append(f"  {str(rel):<60}  {size_kb:>8.1f} KB")
+            lines.append(f"  {rel!s:<60}  {size_kb:>8.1f} KB")
 
     lines.append("")
     lines.append("=" * 72)
@@ -486,7 +494,7 @@ def _write_summary_txt(out_dir: Path) -> None:
     try:
         summary_path.write_text("\n".join(lines), encoding="utf-8")
     except Exception as exc:
-        logging.warning("Could not write summary.txt: %s", exc)
+        logger.warning("Could not write summary.txt: %s", exc)
 
 
 if __name__ == "__main__":

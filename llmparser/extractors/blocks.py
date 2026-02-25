@@ -25,7 +25,7 @@ _BLOCK_TAGS = frozenset(
         "ul", "ol",
         "blockquote",
         "table",
-    }
+    },
 )
 
 # Elements that should not be traversed into directly (handled as a unit)
@@ -90,9 +90,9 @@ def _process_element(el: Tag, base_url: str, blocks: list[dict]) -> None:
         imgs = el.find_all("img")
         non_img_text = el.get_text().strip()
         if imgs and not non_img_text:
-            for img in imgs:
-                if isinstance(img, Tag):
-                    blocks.append(_image_block(img, base_url))
+            blocks.extend(
+                _image_block(img, base_url) for img in imgs if isinstance(img, Tag)
+            )
             return
         text = el.get_text().strip()
         if text:

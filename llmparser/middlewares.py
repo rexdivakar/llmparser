@@ -21,12 +21,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _USER_AGENTS: list[str] = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
 ]
 
 
@@ -37,11 +47,11 @@ class RotatingUserAgentMiddleware:
         self.user_agents = user_agents or _USER_AGENTS
 
     @classmethod
-    def from_crawler(cls, crawler: object) -> "RotatingUserAgentMiddleware":
+    def from_crawler(cls, crawler: object) -> RotatingUserAgentMiddleware:
         ua_list = getattr(crawler, "settings", {}).get("USER_AGENT_LIST", _USER_AGENTS)
         return cls(ua_list)
 
-    def process_request(self, request: "Request") -> None:
+    def process_request(self, request: Request) -> None:
         ua = random.choice(self.user_agents)
         request.headers["User-Agent"] = ua
         logger.debug("UA for %s: %s", request.url, ua)
@@ -58,7 +68,7 @@ class PlaywrightLoggingMiddleware:
     (configured conditionally in __main__.py when chromium is available).
     """
 
-    def process_request(self, request: "Request") -> None:
+    def process_request(self, request: Request) -> None:
         if request.meta.get("playwright"):
             logger.debug(
                 "Playwright render: %s (retry=%s)",
@@ -66,7 +76,7 @@ class PlaywrightLoggingMiddleware:
                 request.meta.get("playwright_retry", False),
             )
 
-    def process_response(self, request: "Request", response: "Response") -> "Response":
+    def process_response(self, request: Request, response: Response) -> Response:
         if request.meta.get("playwright"):
             logger.debug(
                 "Playwright response: %s status=%s len=%d",

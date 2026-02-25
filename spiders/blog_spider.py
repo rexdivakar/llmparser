@@ -17,14 +17,21 @@ from __future__ import annotations
 import json
 import logging
 import re
-import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+import xml.etree.ElementTree as ET  # for ET.ParseError only
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
+
+import defusedxml.ElementTree as defused_ET
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import scrapy
 from bs4 import BeautifulSoup
+from scrapy.http import Request, Response
+
 from llmparser.extractors.blocks import html_to_blocks
 from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
 from llmparser.extractors.main_content import (
@@ -40,7 +47,6 @@ from llmparser.extractors.urlnorm import (
     normalize_url,
 )
 from llmparser.items import ArticleItem
-from scrapy.http import Request, Response
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +76,7 @@ _HARD_EXCLUDE_PATTERNS: tuple[re.Pattern, ...] = tuple(
 
 _SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 
-# Playwright page methods – wait for full JS render
+# Playwright page methods - wait for full JS render
 _PLAYWRIGHT_PAGE_METHODS: list[dict] = [
     {"method": "wait_for_load_state", "args": ["networkidle"]},
 ]
@@ -123,17 +129,17 @@ class BlogSpider(scrapy.Spider):
         parsed = urlparse(self.start_url)
         self.allowed_domain = parsed.netloc.lower()
 
-        # #3 – build the full set of explicitly allowed domains
+        # #3 - build the full set of explicitly allowed domains
         extra: set[str] = set()
         if extra_domains:
             extra = {d.strip().lower() for d in extra_domains.split(",") if d.strip()}
         self._allowed_domains_set: frozenset[str] = frozenset(
-            {self.allowed_domain} | extra
+            {self.allowed_domain} | extra,
         )
         # Keep Scrapy's built-in domain filter in sync
         self.allowed_domains = list(self._allowed_domains_set)
 
-        # #2 – incremental resume: load previously-seen URLs from disk
+        # #2 - incremental resume: load previously-seen URLs from disk
         self._seen_urls_path = (
             (Path(out_dir) / "seen_urls.txt") if resume else None
         )
@@ -146,7 +152,7 @@ class BlogSpider(scrapy.Spider):
 
         self._playwright_attempted: set[str] = set()
         self._pages_crawled = 0
-        # #9 – no longer accumulate skipped in memory; written directly in _log_skip
+        # #9 - no longer accumulate skipped in memory; written directly in _log_skip
         self._skipped_count = 0
 
         self._heuristics = Heuristics()
@@ -241,7 +247,7 @@ class BlogSpider(scrapy.Spider):
         body = response.text
 
         try:
-            root = ET.fromstring(body)
+            root = defused_ET.fromstring(body)
         except ET.ParseError:
             logger.debug("Sitemap at %s is not valid XML", response.url)
             return
@@ -363,7 +369,7 @@ class BlogSpider(scrapy.Spider):
             return None
 
         if result.word_count < 10:
-            logger.debug("Skipping %s – too few words (%d)", url, result.word_count)
+            logger.debug("Skipping %s - too few words (%d)", url, result.word_count)
             return None
 
         try:
@@ -375,7 +381,7 @@ class BlogSpider(scrapy.Spider):
         try:
             # result.html is the extracted article body — separate from the full page soup
             content_text = " ".join(
-                BeautifulSoup(result.html, "lxml").get_text(separator=" ").split()
+                BeautifulSoup(result.html, "lxml").get_text(separator=" ").split(),
             )
         except Exception as exc:
             logger.warning("Text extraction failed for %s: %s", url, exc)
@@ -409,7 +415,7 @@ class BlogSpider(scrapy.Spider):
         canonical = meta.get("canonical_url") or url
         title = meta.get("title") or self._fallback_title(html)
 
-        item = ArticleItem(
+        return ArticleItem(
             url=url,
             canonical_url=canonical,
             title=title,
@@ -429,10 +435,9 @@ class BlogSpider(scrapy.Spider):
             reading_time_minutes=self._heuristics.reading_time(word_count),
             extraction_method_used=result.method,
             article_score=score,
-            scraped_at=datetime.now(timezone.utc).isoformat(),
+            scraped_at=datetime.now(UTC).isoformat(),
             raw_metadata=meta.get("raw_metadata") or {},
         )
-        return item
 
     @staticmethod
     def _fallback_title(html: str) -> str:
@@ -480,7 +485,8 @@ class BlogSpider(scrapy.Spider):
                     continue
                 try:
                     absolute = urljoin(response.url, href)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("URL join failed for %r: %s", href, exc)
                     continue
                 norm = normalize_url(absolute)
                 if norm in self._seen_urls:
@@ -505,7 +511,8 @@ class BlogSpider(scrapy.Spider):
 
             try:
                 absolute = urljoin(response.url, href)
-            except Exception:
+            except Exception as exc:
+                logger.debug("URL join failed for %r: %s", href, exc)
                 continue
 
             norm = normalize_url(absolute)
@@ -568,21 +575,16 @@ class BlogSpider(scrapy.Spider):
                 return False
 
         # User-provided exclude regex
-        if self._exclude_re and self._exclude_re.search(url):
-            return False
-
         # User-provided include regex (only restricts extraction, not crawling,
         # so we still crawl non-matching URLs for link discovery)
-        return True
+        return not (self._exclude_re and self._exclude_re.search(url))
 
     def _should_extract(self, url: str) -> bool:
         """Return True if *url* should be considered for article extraction.
 
-        Applied after scoring — this is a softer filter that respects --include-regex.
+        Applied after scoring - this is a softer filter that respects --include-regex.
         """
-        if self._include_re and not self._include_re.search(url):
-            return False
-        return True
+        return not self._include_re or bool(self._include_re.search(url))
 
     # ------------------------------------------------------------------
     # Request factories
@@ -631,8 +633,8 @@ class BlogSpider(scrapy.Spider):
                 {
                     "url": url,
                     "reason": reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
             )
             with skipped_path.open("a", encoding="utf-8") as f:
                 f.write(entry + "\n")

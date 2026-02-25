@@ -35,7 +35,7 @@ class RichProgressExtension:
         self._thread: threading.Thread | None = None
 
     @classmethod
-    def from_crawler(cls, crawler: "Crawler") -> "RichProgressExtension":
+    def from_crawler(cls, crawler: Crawler) -> RichProgressExtension:
         from scrapy import signals
 
         ext = cls(
@@ -58,7 +58,7 @@ class RichProgressExtension:
         self._start = time.monotonic()
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._run_progress, daemon=True
+            target=self._run_progress, daemon=True,
         )
         self._thread.start()
 
@@ -100,7 +100,7 @@ class RichProgressExtension:
                 TextColumn(
                     "[dim]{task.fields[rate]} p/s | "
                     "{task.fields[articles]} articles | "
-                    "{task.fields[skipped]} skipped[/dim]"
+                    "{task.fields[skipped]} skipped[/dim]",
                 ),
                 console=console,
                 refresh_per_second=4,

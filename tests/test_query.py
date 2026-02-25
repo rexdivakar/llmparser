@@ -1,4 +1,4 @@
-"""Tests for llmparser.query – single-URL fetch and extraction API."""
+"""Tests for llmparser.query - single-URL fetch and extraction API."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from llmparser.items import ArticleSchema
 from llmparser.query import FetchError, extract, fetch, fetch_html
 
@@ -18,7 +19,7 @@ def _read(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# extract() – pure HTML → ArticleSchema (no network)
+# extract() - pure HTML → ArticleSchema (no network)
 # ---------------------------------------------------------------------------
 
 class TestExtract:
@@ -138,7 +139,7 @@ class TestExtract:
 
 
 # ---------------------------------------------------------------------------
-# fetch_html() – HTTP fetch (mocked)
+# fetch_html() - HTTP fetch (mocked)
 # ---------------------------------------------------------------------------
 
 class TestFetchHtml:
@@ -162,20 +163,18 @@ class TestFetchHtml:
         with patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.HTTPError(
-                "https://example.com", 404, "Not Found", {}, None
+                "https://example.com", 404, "Not Found", {}, None,
             ),
-        ):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_html("https://example.com/blog/missing")
+        ), pytest.raises(FetchError) as exc_info:
+            fetch_html("https://example.com/blog/missing")
         assert exc_info.value.status == 404
 
     def test_url_error_raises_fetch_error(self):
         with patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
-        ):
-            with pytest.raises(FetchError):
-                fetch_html("https://example.com/blog/post")
+        ), pytest.raises(FetchError):
+            fetch_html("https://example.com/blog/post")
 
     def test_invalid_scheme_raises_fetch_error(self):
         with pytest.raises(FetchError) as exc_info:
@@ -187,14 +186,13 @@ class TestFetchHtml:
         with patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.HTTPError(url, 403, "Forbidden", {}, None),
-        ):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_html(url)
+        ), pytest.raises(FetchError) as exc_info:
+            fetch_html(url)
         assert exc_info.value.url == url
 
 
 # ---------------------------------------------------------------------------
-# fetch() – combined fetch + extract (mocked network)
+# fetch() - combined fetch + extract (mocked network)
 # ---------------------------------------------------------------------------
 
 class TestFetch:
@@ -217,9 +215,8 @@ class TestFetch:
         with patch(
             "llmparser.query.fetch_html",
             side_effect=FetchError("HTTP 404", url="https://x.com/", status=404),
-        ):
-            with pytest.raises(FetchError) as exc_info:
-                fetch("https://x.com/missing")
+        ), pytest.raises(FetchError) as exc_info:
+            fetch("https://x.com/missing")
         assert exc_info.value.status == 404
 
     def test_word_count_in_result(self):

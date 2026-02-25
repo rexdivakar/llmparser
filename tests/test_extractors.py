@@ -112,8 +112,11 @@ class TestArticleScoring:
         from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
 
         h = Heuristics()
-        score = h.article_score("https://example.com/blog/how-to-extract-structured-content-for-llms", article_html)
-        assert score >= ARTICLE_SCORE_THRESHOLD, f"Expected score >= {ARTICLE_SCORE_THRESHOLD}, got {score}"
+        url = "https://example.com/blog/how-to-extract-structured-content-for-llms"
+        score = h.article_score(url, article_html)
+        assert score >= ARTICLE_SCORE_THRESHOLD, (
+            f"Expected score >= {ARTICLE_SCORE_THRESHOLD}, got {score}"
+        )
 
     def test_listing_page_scores_low(self, listing_html):
         from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics

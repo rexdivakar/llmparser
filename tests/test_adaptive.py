@@ -171,17 +171,23 @@ class TestPreprocessHtml:
         assert "Clonezilla" in clean
 
     def test_cookie_consent_selectors_removed(self) -> None:
-        html = "<html><body><p>Article text here.</p><div class='cookie-banner'><p>Accept cookies</p></div></body></html>"
+        html = (
+            "<html><body><p>Article text here.</p>"
+            "<div class='cookie-banner'><p>Accept cookies</p></div></body></html>"
+        )
         clean = _preprocess_html(html)
         assert "cookie-banner" not in clean
         assert "Article text" in clean
 
     def test_nested_template_removed(self) -> None:
         """Deeply nested template content must be stripped."""
-        html = """<html><body>
-            <p>Good content word.</p>
-            <template id="outer"><div><template id="inner">Inner cookie text.</template></div></template>
-        </body></html>"""
+        html = (
+            "<html><body>\n"
+            "    <p>Good content word.</p>\n"
+            '    <template id="outer"><div>'
+            '<template id="inner">Inner cookie text.</template></div></template>\n'
+            "</body></html>"
+        )
         clean = _preprocess_html(html)
         assert "Inner cookie text" not in clean
         assert "Good content" in clean

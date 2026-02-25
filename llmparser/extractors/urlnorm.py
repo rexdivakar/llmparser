@@ -38,7 +38,7 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
         "ef_id",
         "affiliate_id",
         "clickid",
-    }
+    },
 )
 
 _DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443, "ftp": 21}
@@ -83,7 +83,7 @@ NON_CONTENT_EXTENSIONS: frozenset[str] = frozenset(
         ".wmv",
         ".flv",
         ".webm",
-    }
+    },
 )
 
 

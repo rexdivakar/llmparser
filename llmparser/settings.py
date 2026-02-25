@@ -58,7 +58,7 @@ HTTPCACHE_IGNORE_HTTP_CODES = [500, 502, 503, 504, 408, 429]
 USER_AGENT = "LLMParser/0.2 (+https://github.com/user/llmparser)"
 
 # ---------------------------------------------------------------------------
-# Feeds (unused – we write output ourselves in pipelines)
+# Feeds (unused - we write output ourselves in pipelines)
 # ---------------------------------------------------------------------------
 FEEDS: dict = {}
 

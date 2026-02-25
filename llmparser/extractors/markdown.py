@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 _EXCESSIVE_BLANK_LINES_RE = re.compile(r"\n{3,}")
 _TRAILING_WHITESPACE_RE = re.compile(r"[ \t]+$", re.MULTILINE)
@@ -51,8 +54,8 @@ def _detect_lang(el: object) -> str:
         for cls in classes:
             if isinstance(cls, str) and cls.startswith("language-"):
                 return cls[len("language-"):]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Language detection failed for element: %s", exc)
     return ""
 
 

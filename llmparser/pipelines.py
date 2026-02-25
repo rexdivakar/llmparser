@@ -6,13 +6,14 @@ take a `spider` argument.  Spider identity is not needed at runtime.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import io
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -92,7 +93,7 @@ class ContentHashDedupPipeline:
         if digest in self._seen:
             from scrapy.exceptions import DropItem  # type: ignore[import-untyped]
             raise DropItem(
-                f"Duplicate content (hash={digest}): {item.get('url', '')}"
+                f"Duplicate content (hash={digest}): {item.get('url', '')}",
             )
         self._seen.add(digest)
         return item
@@ -110,7 +111,7 @@ class ArticleValidationPipeline:
         self._log_handle: Any = None
 
     @classmethod
-    def from_crawler(cls, crawler: "Crawler") -> "ArticleValidationPipeline":
+    def from_crawler(cls, crawler: Crawler) -> ArticleValidationPipeline:
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(skipped_log_path=out_dir / "skipped.jsonl")
 
@@ -154,8 +155,8 @@ class ArticleValidationPipeline:
                 {
                     "url": url,
                     "reason": reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
             )
             self._log_handle.write(entry + "\n")
             self._log_handle.flush()
@@ -180,7 +181,7 @@ class ArticleWriterPipeline:
         self._count = 0
 
     @classmethod
-    def from_crawler(cls, crawler: "Crawler") -> "ArticleWriterPipeline":
+    def from_crawler(cls, crawler: Crawler) -> ArticleWriterPipeline:
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(articles_dir=out_dir / "articles")
 
@@ -211,6 +212,23 @@ class ArticleWriterPipeline:
         )
         md_path = self.articles_dir / f"{slug}.md"
         _write_text(md_path, md_content)
+
+        # Formatter plugins write additional output files (e.g. .rst, .txt)
+        try:
+            from llmparser.plugins import get_formatters
+            for plugin in get_formatters():
+                try:
+                    content = plugin.format(schema)
+                    # Sanitize extension to prevent path traversal
+                    safe_ext = re.sub(r"[^a-zA-Z0-9_-]", "", plugin.extension)
+                    if not safe_ext:
+                        logger.warning("Formatter plugin %s has invalid extension", plugin.name)
+                        continue
+                    _write_text(self.articles_dir / f"{slug}.{safe_ext}", content)
+                except Exception as exc:
+                    logger.warning("Formatter plugin %s failed: %s", plugin.name, exc)
+        except Exception as exc:
+            logger.debug("Error iterating formatter plugins: %s", exc)
 
         self._count += 1
         logger.info(
@@ -245,7 +263,7 @@ class IndexWriterPipeline:
         self._count = 0
 
     @classmethod
-    def from_crawler(cls, crawler: "Crawler") -> "IndexWriterPipeline":
+    def from_crawler(cls, crawler: Crawler) -> IndexWriterPipeline:
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(index_path=out_dir / "index.json")
 
@@ -287,17 +305,13 @@ class IndexWriterPipeline:
         # Read back, sort by published_at descending, write final index.json
         entries: list[dict] = []
         if self._tmp_path.exists():
-            for line in self._tmp_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except Exception:
-                        pass
-            try:
+            for raw_line in self._tmp_path.read_text(encoding="utf-8").splitlines():
+                stripped = raw_line.strip()
+                if stripped:
+                    with contextlib.suppress(Exception):
+                        entries.append(json.loads(stripped))
+            with contextlib.suppress(Exception):
                 self._tmp_path.unlink()
-            except Exception:
-                pass
 
         entries.sort(key=lambda e: e.get("published_at") or "", reverse=True)
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +327,9 @@ class IndexWriterPipeline:
         try:
             buf = io.StringIO()
             if entries:
-                writer = csv.DictWriter(buf, fieldnames=list(entries[0].keys()), extrasaction="ignore")
+                writer = csv.DictWriter(
+                    buf, fieldnames=list(entries[0].keys()), extrasaction="ignore",
+                )
                 writer.writeheader()
                 writer.writerows(entries)
             csv_path.write_text(buf.getvalue(), encoding="utf-8")

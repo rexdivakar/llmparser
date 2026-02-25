@@ -14,9 +14,11 @@ Supports:
 from __future__ import annotations
 
 import logging
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # for ET.ParseError only
 from typing import NamedTuple
 from urllib.parse import urljoin
+
+import defusedxml.ElementTree as defused_ET
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +83,7 @@ def _parse_rss(root: ET.Element) -> list[FeedEntry]:
                 author=author,
                 published_at=published_at,
                 summary=summary,
-            )
+            ),
         )
 
     return entries
@@ -128,7 +130,7 @@ def _parse_atom(root: ET.Element, base_url: str) -> list[FeedEntry]:
                 author=author,
                 published_at=published_at,
                 summary=summary,
-            )
+            ),
         )
 
     return entries
@@ -149,7 +151,7 @@ def parse_feed(xml_text: str, base_url: str = "") -> list[FeedEntry]:
         feed is ordered (no re-sorting is applied).
     """
     try:
-        root = ET.fromstring(xml_text)
+        root = defused_ET.fromstring(xml_text)
     except ET.ParseError as exc:
         logger.warning("Feed XML parse error: %s", exc)
         return []

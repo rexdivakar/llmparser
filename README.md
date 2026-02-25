@@ -133,6 +133,8 @@ is generic HTML semantics — which means LLMParser works on sites that don't ex
 - **Concurrent batch API** — `fetch_batch()` fetches multiple URLs in parallel
 - **Polite crawling** — robots.txt, auto-throttle, Retry-After header support
 - **Structured output** — JSON + Markdown per page; `index.json` + `index.csv` summaries
+- **Native RAG integration** — `chunk_article()` with paragraph/fixed/sentence strategies; LangChain + LlamaIndex adapters; JSONL export for Pinecone/Chroma/Weaviate/Qdrant
+- **Plugin architecture** — extend fetch strategies, content extractors, article scorers, and output formatters without forking the library
 - **No LLMs** — fully deterministic extraction; no API keys, no embeddings
 
 ---
@@ -146,6 +148,9 @@ pip install llmparser
 
 # Only needed for JS-rendered sites
 playwright install chromium
+
+# Optional: RAG framework adapters
+pip install "llmparser[rag]"  # installs langchain-core + llama-index-core
 ```
 
 ### 2. Single URL (Python API)
@@ -242,6 +247,192 @@ from llmparser import fetch_html, extract
 html = fetch_html("https://example.com/blog/post")
 article = extract(html, url="https://example.com/blog/post")
 ```
+
+---
+
+## RAG Integration
+
+LLMParser has a native chunking layer that turns any `ArticleSchema` into vector-DB-ready
+chunks — with rich metadata attached to every chunk.
+
+### Install extras
+
+```bash
+pip install "llmparser[rag]"   # installs langchain-core + llama-index-core
+```
+
+### Chunk an article
+
+```python
+from llmparser import fetch
+from llmparser.rag import chunk_article
+
+article = fetch("https://example.com/blog/post")
+
+# Three chunking strategies:
+#   "paragraph" — split on heading/paragraph content_blocks (best quality, default)
+#   "fixed"     — sliding window of chunk_size chars with overlap
+#   "sentence"  — split on sentence endings, then group to chunk_size
+chunks = chunk_article(article, strategy="paragraph", chunk_size=512, overlap=50)
+
+for chunk in chunks:
+    print(chunk.chunk_id)         # "<slug>_<index>" — stable, reproducible ID
+    print(chunk.text)             # chunk text
+    print(chunk.metadata)         # url, title, author, published_at, tags, chunk_index, …
+```
+
+Each `ArticleChunk` carries:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `chunk_id` | `str` | `<url-slug>_<index>` — stable, reproducible |
+| `text` | `str` | Chunk text |
+| `chunk_index` | `int` | Position within the article |
+| `article_url` | `str` | Source URL |
+| `metadata` | `dict` | url, title, author, published_at, tags, site_name, language, chunk_index, chunk_count, word_count |
+
+### LangChain adapter
+
+```python
+# Requires: pip install langchain-core
+docs = article.to_langchain(strategy="paragraph", chunk_size=512)
+# docs is a list of langchain_core.documents.Document
+# doc.page_content = chunk text, doc.metadata = chunk metadata
+
+# Or directly:
+from llmparser.rag import to_langchain
+docs = to_langchain(article)
+```
+
+### LlamaIndex adapter
+
+```python
+# Requires: pip install llama-index-core
+nodes = article.to_llamaindex(strategy="sentence", chunk_size=256)
+# nodes is a list of llama_index.core.schema.TextNode
+# node.text = chunk text, node.metadata = chunk metadata, node.id_ = chunk_id
+
+from llmparser.rag import to_llamaindex
+nodes = to_llamaindex(article)
+```
+
+### JSONL export (Pinecone / Chroma / Weaviate / Qdrant)
+
+```python
+from llmparser import fetch_batch, to_jsonl
+
+articles = fetch_batch([
+    "https://example.com/blog/post-1",
+    "https://example.com/blog/post-2",
+], max_workers=4, on_error="skip")
+
+# Each line: {"id": "<chunk_id>", "text": "...", "metadata": {...}}
+n = to_jsonl(articles, "/tmp/chunks.jsonl", strategy="paragraph", chunk_size=512)
+print(f"Wrote {n} chunks")
+```
+
+The JSONL format is directly compatible with upsert endpoints for:
+- **Pinecone**: `index.upsert_from_dataframe(df)` after loading with pandas
+- **Chroma**: `collection.add(ids=[c["id"]], documents=[c["text"]], metadatas=[c["metadata"]])`
+- **Weaviate** / **Qdrant**: `client.upsert(collection, points=[{"id": …, "vector": …, "payload": c["metadata"]}])`
+
+### Convenience methods on `ArticleSchema`
+
+```python
+article = fetch("https://example.com/blog/post")
+
+chunks = article.to_chunks(strategy="fixed", chunk_size=256)
+docs   = article.to_langchain(strategy="paragraph")
+nodes  = article.to_llamaindex(chunk_size=512)
+```
+
+---
+
+## Plugin Architecture
+
+LLMParser exposes four extension points via `@runtime_checkable` Protocol classes.
+Register plugins once at startup; they are automatically used on every subsequent fetch.
+
+### Fetch strategy plugin
+
+Override how a URL is fetched (e.g. authenticated sessions, custom proxies):
+
+```python
+from llmparser import register_strategy
+
+class AuthenticatedFetcher:
+    name = "my_auth_strategy"
+
+    def can_handle(self, url: str, signals) -> bool:
+        return "internal.example.com" in url
+
+    def fetch(self, url: str, timeout: int) -> str:
+        import requests
+        return requests.get(url, headers={"Authorization": "Bearer …"}, timeout=timeout).text
+
+register_strategy(AuthenticatedFetcher())
+```
+
+### Content extractor plugin
+
+Provide a custom HTML → content extractor (higher `priority` is tried first):
+
+```python
+from llmparser import register_extractor
+
+class MyExtractor:
+    name = "my_extractor"
+    priority = 10  # higher than built-in tiers
+
+    def can_extract(self, html: str, url: str) -> bool:
+        return "special-site.com" in url
+
+    def extract(self, html: str, url: str) -> str | None:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "lxml")
+        main = soup.select_one(".article-body")
+        return str(main) if main else None
+
+register_extractor(MyExtractor())
+```
+
+### Article scorer plugin
+
+Adjust the article quality score (e.g. boost domain-specific signals):
+
+```python
+from llmparser import register_scorer
+
+class TechBooster:
+    name = "tech_booster"
+
+    def score(self, url: str, html: str, base_score: int) -> int:
+        boost = 10 if "python" in html.lower() else 0
+        return base_score + boost
+
+register_scorer(TechBooster())
+```
+
+### Output formatter plugin
+
+Write articles in additional formats alongside `.json` and `.md`:
+
+```python
+from llmparser import register_formatter
+
+class RstFormatter:
+    name = "rst_formatter"
+    extension = "rst"  # saves as <slug>.rst next to .json and .md
+
+    def format(self, article) -> str:
+        lines = [article.title, "=" * len(article.title), "", article.content_text or ""]
+        return "\n".join(lines)
+
+register_formatter(RstFormatter())
+```
+
+All four plugin types are tolerance-wrapped — an exception in a plugin is logged as a warning
+and the built-in pipeline continues unaffected.
 
 ---
 
@@ -401,21 +592,24 @@ pytest tests/ -v
 
 ```
 llmparser/                  # Core package
-├── __init__.py             # Public API: fetch, fetch_batch, fetch_feed, fetch_html, extract
+├── __init__.py             # Public API: fetch, fetch_batch, fetch_feed, fetch_html, extract,
+│                           #   register_strategy/extractor/scorer/formatter, ArticleChunk, to_jsonl
 ├── __main__.py             # CLI (python -m llmparser)
-├── items.py                # Pydantic ArticleSchema
+├── items.py                # Pydantic ArticleSchema (+ to_chunks/to_langchain/to_llamaindex)
+├── rag.py                  # RAG chunking: chunk_article, to_langchain, to_llamaindex, to_jsonl
+├── plugins.py              # Plugin registry: FetchStrategy/Extractor/Scorer/Formatter protocols
 ├── settings.py             # Scrapy settings
 ├── middlewares.py          # Rotating UA + Playwright logging
 ├── pipelines.py            # ContentHashDedup → Validation → ArticleWriter → IndexWriter (+CSV)
 └── extractors/
-    ├── adaptive.py         # Page-type classifier + strategy selector
+    ├── adaptive.py         # Page-type classifier + strategy selector (+ strategy plugin hook)
     ├── feed.py             # RSS 2.0 / Atom 1.0 parser
     ├── metadata.py         # JSON-LD, OG, Twitter Card, <meta>
-    ├── main_content.py     # readability + trafilatura + DOM heuristic
+    ├── main_content.py     # readability + trafilatura + DOM heuristic (+ extractor plugin hook)
     ├── blocks.py           # HTML → typed content blocks
     ├── markdown.py         # HTML → Markdown
     ├── urlnorm.py          # URL normalization + slug generation
-    └── heuristics.py       # Article scoring + JS detection
+    └── heuristics.py       # Article scoring + JS detection (+ scorer plugin hook)
 
 spiders/
 └── blog_spider.py          # Generic domain spider (sitemap + BFS + pagination)

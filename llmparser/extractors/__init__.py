@@ -8,11 +8,11 @@ from .metadata import extract_metadata
 from .urlnorm import normalize_url, url_to_slug
 
 __all__ = [
-    "extract_metadata",
+    "Heuristics",
     "extract_main_content",
+    "extract_metadata",
     "html_to_blocks",
     "html_to_markdown",
     "normalize_url",
     "url_to_slug",
-    "Heuristics",
 ]

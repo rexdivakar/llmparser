@@ -53,7 +53,8 @@ def _print_analysis(article: ArticleSchema, pre_html: str, pre_url: str) -> None
     print("\nPAGE ANALYSIS")
     print(f"  Type       : {_TYPE_LABELS.get(article.page_type or '', article.page_type or '—')} "
           f"(confidence: {classification.confidence:.0%})")
-    print(f"  Strategy   : {_STRATEGY_LABELS.get(article.fetch_strategy or '', article.fetch_strategy or '—')}")
+    strat = _STRATEGY_LABELS.get(article.fetch_strategy or "", article.fetch_strategy or "-")
+    print(f"  Strategy   : {strat}")
     print(f"  Reason     : {classification.reason}")
     fw = ", ".join(sig.frameworks_detected) if sig.frameworks_detected else "—"
     print(f"  Frameworks : {fw}")
@@ -76,7 +77,8 @@ def _print_article(article: ArticleSchema) -> None:
     print(f"  Word count   : {article.word_count}")
     print(f"  Reading time : {article.reading_time_minutes} min")
     print(f"  Extraction   : {article.extraction_method_used}")
-    print(f"  Fetch strat  : {_STRATEGY_LABELS.get(article.fetch_strategy or '', article.fetch_strategy or '—')}")
+    fetch_strat = _STRATEGY_LABELS.get(article.fetch_strategy or "", article.fetch_strategy or "-")
+    print(f"  Fetch strat  : {fetch_strat}")
     print(f"  Page type    : {_TYPE_LABELS.get(article.page_type or '', article.page_type or '—')}")
     print(f"  Article score: {article.article_score}")
     print(f"  Scraped at   : {article.scraped_at}")
@@ -131,11 +133,8 @@ try:
     from llmparser.query import fetch_html as _fetch_html
     _pre_html = _fetch_html(URL)
     _print_analysis(article, _pre_html, URL)
-except Exception:
-    pass  # Analysis display is best-effort; don't block the article output
+except Exception as _exc:
+    import logging as _log
+    _log.getLogger(__name__).debug("Page analysis display failed: %s", _exc)
 
 _print_article(article)
-
-# # As a plain dict (JSON-serialisable)
-# import json, sys
-# json.dump(article.model_dump(), sys.stdout, indent=2, ensure_ascii=False)

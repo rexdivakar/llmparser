@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import scrapy
 from pydantic import BaseModel, Field, field_validator
@@ -91,17 +91,17 @@ class ArticleSchema(BaseModel):
 
     # Identity
     url: str
-    canonical_url: Optional[str] = None
+    canonical_url: str | None = None
 
     # Metadata
     title: str = ""
-    author: Optional[str] = None
-    published_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    site_name: Optional[str] = None
-    language: Optional[str] = None
+    author: str | None = None
+    published_at: str | None = None
+    updated_at: str | None = None
+    site_name: str | None = None
+    language: str | None = None
     tags: list[str] = Field(default_factory=list)
-    summary: Optional[str] = None
+    summary: str | None = None
 
     # Content
     content_markdown: str = ""
@@ -125,8 +125,8 @@ class ArticleSchema(BaseModel):
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
 
     # Adaptive fetch provenance
-    fetch_strategy: Optional[str] = None   # which strategy produced the HTML
-    page_type: Optional[str] = None        # classified page type
+    fetch_strategy: str | None = None   # which strategy produced the HTML
+    page_type: str | None = None        # classified page type
 
     @field_validator("url", "canonical_url", mode="before")
     @classmethod
@@ -141,6 +141,34 @@ class ArticleSchema(BaseModel):
         if isinstance(v, str):
             return v.strip()
         return v or ""
+
+    # ------------------------------------------------------------------
+    # RAG helpers (delegate to llmparser.rag to avoid hard dependencies)
+    # ------------------------------------------------------------------
+
+    def to_chunks(self, **kwargs: Any) -> list[Any]:
+        """Split this article into RAG-ready :class:`~llmparser.rag.ArticleChunk` objects.
+
+        All keyword arguments are forwarded to :func:`llmparser.rag.chunk_article`.
+        """
+        from llmparser.rag import chunk_article
+        return chunk_article(self, **kwargs)
+
+    def to_langchain(self, **kwargs: Any) -> list[Any]:
+        """Return a list of LangChain ``Document`` objects (requires ``langchain-core``).
+
+        All keyword arguments are forwarded to :func:`llmparser.rag.chunk_article`.
+        """
+        from llmparser.rag import to_langchain as _to_langchain
+        return _to_langchain(self, **kwargs)
+
+    def to_llamaindex(self, **kwargs: Any) -> list[Any]:
+        """Return a list of LlamaIndex ``TextNode`` objects (requires ``llama-index-core``).
+
+        All keyword arguments are forwarded to :func:`llmparser.rag.chunk_article`.
+        """
+        from llmparser.rag import to_llamaindex as _to_llamaindex
+        return _to_llamaindex(self, **kwargs)
 
 
 def article_item_to_schema(item: ArticleItem) -> ArticleSchema:

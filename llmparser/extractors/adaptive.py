@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 _MIN_CONTENT_WORDS = 150
 
 # Playwright requested but unavailable — warn once per session
-_playwright_warned = False
+_playwright_warned: dict[str, bool] = {"value": False}
 
 # ---------------------------------------------------------------------------
 # User-agents
@@ -52,23 +52,23 @@ _MOBILE_UA = (
 # ---------------------------------------------------------------------------
 
 _JS_FRAMEWORK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("Next.js",   re.compile(r"/_next/static/|window\.__NEXT_DATA__", re.I)),
-    ("Nuxt.js",   re.compile(r"/__nuxt/|window\.__NUXT__", re.I)),
-    ("React/CRA", re.compile(r"/static/js/main\.[a-f0-9]+\.js", re.I)),
-    ("Webpack",   re.compile(r"chunk\.[a-f0-9]+\.js", re.I)),
-    ("Angular",   re.compile(r"angular(?:\.min)?\.js|ng-app", re.I)),
-    ("Vue",       re.compile(r"vue(?:\.min)?\.js|data-v-app", re.I)),
-    ("Ember",     re.compile(r"ember(?:\.min)?\.js", re.I)),
-    ("Gatsby",    re.compile(r"gatsby-focus-wrapper|window\.__gatsby", re.I)),
-    ("Svelte",    re.compile(r"svelte(?:kit)?|__svelte", re.I)),
-    ("Remix",     re.compile(r"__remixContext", re.I)),
-    ("Astro",     re.compile(r"astro-island|astro:page-load", re.I)),
+    ("Next.js",   re.compile(r"/_next/static/|window\.__NEXT_DATA__", re.IGNORECASE)),
+    ("Nuxt.js",   re.compile(r"/__nuxt/|window\.__NUXT__", re.IGNORECASE)),
+    ("React/CRA", re.compile(r"/static/js/main\.[a-f0-9]+\.js", re.IGNORECASE)),
+    ("Webpack",   re.compile(r"chunk\.[a-f0-9]+\.js", re.IGNORECASE)),
+    ("Angular",   re.compile(r"angular(?:\.min)?\.js|ng-app", re.IGNORECASE)),
+    ("Vue",       re.compile(r"vue(?:\.min)?\.js|data-v-app", re.IGNORECASE)),
+    ("Ember",     re.compile(r"ember(?:\.min)?\.js", re.IGNORECASE)),
+    ("Gatsby",    re.compile(r"gatsby-focus-wrapper|window\.__gatsby", re.IGNORECASE)),
+    ("Svelte",    re.compile(r"svelte(?:kit)?|__svelte", re.IGNORECASE)),
+    ("Remix",     re.compile(r"__remixContext", re.IGNORECASE)),
+    ("Astro",     re.compile(r"astro-island|astro:page-load", re.IGNORECASE)),
 ]
 
 # IDs of root elements used by JS frameworks
 _JS_ROOT_ID_RE = re.compile(
     r"^(root|app|__next|__nuxt|app-root|gatsby-focus-wrapper|ember-application)$",
-    re.I,
+    re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ class ClassificationResult:
     page_type: PageType
     signals: PageSignals
     recommended_strategy: str   # "static"|"amp"|"mobile_ua"|"playwright"
-    confidence: float           # 0.0–1.0
+    confidence: float           # 0.0-1.0
     reason: str                 # Human-readable explanation
 
 
@@ -171,7 +171,7 @@ def _raw_word_count(html: str) -> int:
     return len(re.sub(r"<[^>]+>", " ", html).split())
 
 
-def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
+def _detect_signals(html: str, url: str = "") -> PageSignals:
     """Extract all classification signals from *html*.
 
     Performs two lightweight BS4 parses:
@@ -203,7 +203,7 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
     # decompose() on the tag leaf does not remove those children.  We must
     # strip <template> blocks via regex BEFORE parsing.
     try:
-        from llmparser.extractors.main_content import _strip_cookie_consent  # noqa: PLC0415
+        from llmparser.extractors.main_content import _strip_cookie_consent
         clean_html = re.sub(
             r"<template\b[^>]*>.*?</template>",
             "",
@@ -217,7 +217,7 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
         _strip_cookie_consent(soup_text)
         body = soup_text.find("body")
         signals.body_word_count = len(
-            ((body or soup_text).get_text(separator=" ")).split()
+            ((body or soup_text).get_text(separator=" ")).split(),
         )
     except Exception:
         signals.body_word_count = _raw_word_count(html)
@@ -225,7 +225,7 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
     # ── Meta title ───────────────────────────────────────────────────────────
     signals.has_meta_title = bool(
         soup_full.find("meta", attrs={"property": "og:title"})
-        or soup_full.find("title")
+        or soup_full.find("title"),
     )
 
     # ── JSON-LD article schema ───────────────────────────────────────────────
@@ -277,13 +277,9 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
             signals.js_root_found = True
             break
 
-    if signals.frameworks_detected and (
+    if (signals.frameworks_detected and (
         signals.js_root_found or signals.body_word_count < 100
-    ):
-        signals.is_js_spa = True
-    # Ultra-thin body with external scripts → JS SPA even without framework fingerprints
-    # (e.g. VFS Global, custom Angular builds, Ember, or proprietary frameworks)
-    elif signals.body_word_count < 10 and bool(soup_full.find("script", src=True)):
+    )) or (signals.body_word_count < 10 and bool(soup_full.find("script", src=True))):
         signals.is_js_spa = True
 
     # ── Cookie wall + paywall (share one body-text extraction) ───────────────
@@ -307,10 +303,10 @@ def _detect_signals(html: str, url: str = "") -> PageSignals:  # noqa: C901
                         if soup_full.select(sel):
                             signals.is_paywalled = True
                             break
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+                    except Exception as exc:
+                        logger.debug("CSS selector parse error for %r: %s", sel, exc)
+    except Exception as exc:
+        logger.debug("Cookie/paywall signal extraction failed: %s", exc)
 
     return signals
 
@@ -436,7 +432,7 @@ def adaptive_fetch_html(
         FetchError: Only when even the static fetch fails completely.
     """
     # Import lazily to avoid circular imports (query imports adaptive lazily too)
-    from llmparser.query import fetch_html as _static  # noqa: PLC0415
+    from llmparser.query import fetch_html as _static
 
     # ── Step 1: Static fetch (always first) ──────────────────────────────────
     html = _static(url, timeout=timeout, user_agent=user_agent)
@@ -516,6 +512,29 @@ def adaptive_fetch_html(
                 strategy_used="playwright_fallback",
             )
 
+    # ── Step 6: Registered strategy plugins ──────────────────────────────────
+    try:
+        from llmparser.plugins import get_strategies
+        for plugin in get_strategies():
+            if plugin.can_handle(url, classification.signals):
+                try:
+                    plugin_html = plugin.fetch(url, timeout=timeout)
+                    if (
+                        plugin_html
+                        and _raw_word_count(plugin_html)
+                        > classification.signals.body_word_count
+                    ):
+                        logger.info("Plugin strategy %s succeeded for %s", plugin.name, url)
+                        return FetchResult(
+                            html=plugin_html,
+                            classification=classification,
+                            strategy_used=plugin.name,
+                        )
+                except Exception as exc:
+                    logger.warning("Plugin strategy %s failed for %s: %s", plugin.name, url, exc)
+    except Exception as exc:
+        logger.debug("Error iterating strategy plugins: %s", exc)
+
     # ── Best effort ───────────────────────────────────────────────────────────
     logger.warning(
         "All strategies exhausted for %s — returning best-effort result (%d words)",
@@ -531,17 +550,16 @@ def adaptive_fetch_html(
 
 def _try_playwright(url: str, timeout: int = 30) -> str | None:
     """Attempt a Playwright fetch; return HTML string or None on any failure."""
-    global _playwright_warned
     try:
-        from llmparser.query import _fetch_html_playwright  # noqa: PLC0415
+        from llmparser.query import _fetch_html_playwright
         return _fetch_html_playwright(url, timeout=max(timeout, 60))
     except ImportError:
-        if not _playwright_warned:
+        if not _playwright_warned["value"]:
             logger.warning(
-                "Playwright not installed — install with: "
-                "pip install playwright && playwright install chromium"
+                "Playwright not installed - install with: "
+                "pip install playwright && playwright install chromium",
             )
-            _playwright_warned = True
+            _playwright_warned["value"] = True
         return None
     except Exception as exc:
         logger.warning("Playwright fetch failed for %s: %s", url, exc)

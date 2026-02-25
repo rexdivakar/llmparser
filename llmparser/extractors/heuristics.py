@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -43,7 +46,7 @@ _ARTICLE_PATH_SEGMENTS: frozenset[str] = frozenset(
         "learn",
         "thought",
         "thoughts",
-    }
+    },
 )
 
 _EXCLUDED_PATH_PATTERNS: tuple[re.Pattern, ...] = tuple(
@@ -88,7 +91,7 @@ _ARTICLE_JSONLD_TYPES: frozenset[str] = frozenset(
         "reportage",
         "satiricalarticle",
         "socialmediaposting",
-    }
+    },
 )
 
 _JS_ROOT_SELECTORS: tuple[str, ...] = (
@@ -140,6 +143,18 @@ class Heuristics:
         score = 0
         score += self._url_score(url)
         score += self._content_score(html, soup=soup)
+
+        # Scorer plugins adjust the base score
+        try:
+            from llmparser.plugins import get_scorers
+            for plugin in get_scorers():
+                try:
+                    score = plugin.score(url, html, score)
+                except Exception as exc:
+                    logger.warning("Scorer plugin %s failed: %s", plugin.name, exc)
+        except Exception as exc:
+            logger.debug("Error loading scorer plugins: %s", exc)
+
         return score
 
     def _url_score(self, url: str) -> int:
@@ -238,7 +253,7 @@ class Heuristics:
         if len(links) > 30:
             score -= 10
 
-        # Pagination links – rel is a multi-valued list attribute in BS4
+        # Pagination links - rel is a multi-valued list attribute in BS4
         for link_tag in soup.find_all("link"):
             rel_val = link_tag.get("rel")
             if isinstance(rel_val, list) and any(
@@ -274,8 +289,8 @@ class Heuristics:
                     result["has_author"] = True
                 if data.get("datePublished"):
                     result["has_date"] = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("JSON-LD parse error: %s", exc)
 
         # OG / meta tags
         for tag in soup.find_all("meta"):
@@ -346,8 +361,8 @@ class Heuristics:
             script_count = len(soup2.find_all("script", src=True))
             if script_count > 8 and word_count < 50:
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("JS signal 3 (script count) parse failed: %s", exc)
 
         return False
 

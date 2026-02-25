@@ -1,4 +1,4 @@
-"""llmparser.query – single-URL fetch and extraction API.
+"""llmparser.query - single-URL fetch and extraction API.
 
 Lets any Python script import and call ``fetch()`` without running the
 full Scrapy crawler.  Uses only the stdlib (``urllib``) for HTTP so no
@@ -39,7 +39,7 @@ import time
 import urllib.error
 import urllib.request
 import zlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from llmparser.extractors.blocks import html_to_blocks
@@ -152,14 +152,14 @@ def fetch_html(
                         raw = gzip.decompress(raw)
                     except OSError as exc:
                         raise FetchError(
-                            f"gzip decompression failed for {url}: {exc}", url=url
+                            f"gzip decompression failed for {url}: {exc}", url=url,
                         ) from exc
                 elif encoding in ("deflate", "zlib"):
                     try:
                         raw = zlib.decompress(raw)
                     except zlib.error as exc:
                         raise FetchError(
-                            f"deflate decompression failed for {url}: {exc}", url=url
+                            f"deflate decompression failed for {url}: {exc}", url=url,
                         ) from exc
                 elif encoding == "br":
                     raise FetchError(
@@ -269,7 +269,7 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
                     page.goto(url, timeout=effective_timeout, wait_until="load")
                 except Exception:
                     logger.warning(
-                        "Playwright 'load' timed out for %s — continuing", url
+                        "Playwright 'load' timed out for %s — continuing", url,
                     )
 
                 # Phase 2: short networkidle wait so SPAs (Angular, React, Vue)
@@ -280,7 +280,7 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
                     logger.debug("Playwright networkidle reached for %s", url)
                 except Exception:
                     logger.debug(
-                        "Playwright networkidle timed out for %s — continuing", url
+                        "Playwright networkidle timed out for %s — continuing", url,
                     )
 
                 # Phase 3: wait for the DOM to actually contain meaningful text.
@@ -288,7 +288,8 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
                 # (e.g. Angular apps that stream data via WebSocket or long-poll).
                 try:
                     page.wait_for_function(
-                        "() => document.body.innerText.trim().split(/\\s+/).filter(Boolean).length > 50",
+                        "() => document.body.innerText.trim()"
+                        ".split(/\\s+/).filter(Boolean).length > 50",
                         timeout=12_000,
                     )
                     logger.debug("Playwright DOM hydration confirmed for %s", url)
@@ -323,13 +324,18 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
                             'mat-expansion-panel:not(.mat-expanded), ' +
                             '.mat-expansion-panel:not(.mat-expanded)'
                         ).forEach(el => {
-                            const header = el.querySelector('mat-expansion-panel-header, .mat-expansion-panel-header');
+                            const header = el.querySelector(
+                                'mat-expansion-panel-header, '
+                                + '.mat-expansion-panel-header'
+                            );
                             if (header) { try { header.click(); count++; } catch(e) {} }
                         });
 
                         // Bootstrap / generic collapsibles
                         document.querySelectorAll(
-                            '.collapse:not(.show), [data-bs-toggle="collapse"], [data-toggle="collapse"]'
+                            '.collapse:not(.show), '
+                            + '[data-bs-toggle="collapse"], '
+                            + '[data-toggle="collapse"]'
                         ).forEach(el => {
                             try { el.click(); count++; } catch (e) {}
                         });
@@ -352,7 +358,7 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
                 html: str = page.content()
                 if not html.strip():
                     raise FetchError(
-                        f"Playwright returned empty page for {url}", url=url
+                        f"Playwright returned empty page for {url}", url=url,
                     )
                 return html
             finally:
@@ -416,7 +422,7 @@ def extract(
     try:
         from bs4 import BeautifulSoup
         content_text = " ".join(
-            BeautifulSoup(result.html, "lxml").get_text(separator=" ").split()
+            BeautifulSoup(result.html, "lxml").get_text(separator=" ").split(),
         )
     except Exception:
         content_text = ""
@@ -458,8 +464,8 @@ def extract(
                 h1 = soup.find("h1")
                 if h1:
                     title = h1.get_text().strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Title fallback parse failed: %s", exc)
 
     return ArticleSchema(
         url=url,
@@ -481,7 +487,7 @@ def extract(
         reading_time_minutes=_heuristics.reading_time(word_count),
         extraction_method_used=result.method,
         article_score=_heuristics.article_score(url, html),
-        scraped_at=datetime.now(timezone.utc).isoformat(),
+        scraped_at=datetime.now(UTC).isoformat(),
         raw_metadata=meta.get("raw_metadata") or {},
         fetch_strategy=fetch_strategy,
         page_type=page_type,
@@ -542,7 +548,7 @@ def fetch(
         return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
 
     # Adaptive engine: classify page type and select the best strategy
-    from llmparser.extractors.adaptive import adaptive_fetch_html  # noqa: PLC0415
+    from llmparser.extractors.adaptive import adaptive_fetch_html
 
     result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent)
     article = extract(
@@ -616,7 +622,10 @@ def fetch_feed(
 
     logger.info("fetch_feed: %d entries in %s", len(entries), feed_url)
     urls = [e.url for e in entries[:max_articles]]
-    return fetch_batch(urls, timeout=timeout, user_agent=user_agent, on_error="skip")
+    return [
+        a for a in fetch_batch(urls, timeout=timeout, user_agent=user_agent, on_error="skip")
+        if a is not None
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +639,7 @@ def fetch_batch(
     timeout: int = 30,
     user_agent: str | None = None,
     on_error: str = "skip",
-) -> list[ArticleSchema]:
+) -> list[ArticleSchema | None]:
     """Fetch multiple URLs concurrently and return extracted articles.
 
     Uses a :class:`~concurrent.futures.ThreadPoolExecutor` to run
@@ -668,7 +677,7 @@ def fetch_batch(
         for article in articles:
             print(article.title, article.word_count)
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     if on_error not in ("skip", "raise", "include"):
         raise ValueError(f"on_error must be 'skip', 'raise', or 'include'; got {on_error!r}")
@@ -695,5 +704,5 @@ def fetch_batch(
             results[idx] = article
 
     if on_error == "include":
-        return results  # type: ignore[return-value]
+        return results
     return [r for r in results if r is not None]

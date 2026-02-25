@@ -43,6 +43,7 @@ dependencies = [
   "beautifulsoup4>=4.12",
   "lxml>=5.0",
   "dateparser>=1.2",
+  "defusedxml>=0.7",
   "pydantic>=2.5",
   "markdownify>=0.13",
   "rich>=13.0",
@@ -55,6 +56,10 @@ Documentation = "https://github.com/rexdivakar/llmparser/tree/main/docs"
 "Bug Tracker" = "https://github.com/rexdivakar/llmparser/issues"
 
 [project.optional-dependencies]
+rag = [
+  "langchain-core>=0.1",
+  "llama-index-core>=0.10",
+]
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
@@ -72,6 +77,72 @@ include = ["llmparser*", "spiders*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "B",     # flake8-bugbear
+    "UP",    # pyupgrade
+    "FURB",  # refurb
+    "RUF",   # ruff-specific rules
+    "SIM",   # flake8-simplify
+    "PERF",  # perflint
+    "COM",   # flake8-commas (trailing commas)
+    "TRY",   # tryceratops
+    "I",     # isort (import sorting)
+    "LOG",   # flake8-logging (use module logger, not root logger)
+    "PIE",   # flake8-pie (simplification: startswith tuple, etc.)
+    "PLW",   # pylint warnings (loop variable overwrite, global statement)
+    "S",     # flake8-bandit (security: defusedxml, etc.)
+    "TC",    # flake8-type-checking (TYPE_CHECKING imports)
+    "ERA",   # eradicate (commented-out code)
+    "G",     # flake8-logging-format (logger.exception vs logger.error+exc_info)
+    "Q",     # flake8-quotes (consistent quote style)
+    "RET",   # flake8-return (unnecessary assignment before return)
+    "PLC",   # pylint convention (dict.items() iteration)
+]
+ignore = [
+    # try-except inside loops: intentional fault-isolation in HTML parsers
+    "PERF203",
+    # long raise messages: descriptive errors are valuable in a parsing library
+    "TRY003",
+    # logger.warning in except: we intentionally degrade gracefully without re-raising
+    "TRY400",
+    # assert is valid for internal invariants in production code
+    "S101",
+    # random.choice for User-Agent rotation is not security-sensitive
+    "S311",
+    # urlopen/Request scheme audit: fetch_html validates http/https before these calls
+    "S310",
+    # PLC0415 (import not at top level): intentional for optional/lazy deps
+    "PLC0415",
+    # PLR2004 (magic values): acceptable in parsers and heuristic thresholds
+    "PLR2004",
+    # PLR0912/PLR0911/PLR0915/PLR0913 (complexity): parsing functions are inherently complex
+    "PLR0912", "PLR0911", "PLR0915", "PLR0913",
+    # FBT (boolean args): common pattern in this codebase
+    "FBT001", "FBT002", "FBT003",
+    # BLE001 (broad exception): intentional in parsing fallback chains
+    "BLE001",
+    # ANN* (type annotations): not required for all internal helpers
+    "ANN",
+    # D* (docstrings): not required for all private helpers
+    "D",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# evaluate.py is a standalone dev script; top-level imports would break --help
+"evaluate.py" = ["E402", "T201", "PLC0415"]
+# test helper imports inside methods are part of testing import behaviour
+"tests/*" = ["TRY", "S101"]
+# settings.py uses bullet-list comments to document conditional Playwright setup
+"llmparser/settings.py" = ["ERA001"]
 
 [tool.pyright]
 pythonVersion = "3.11"
