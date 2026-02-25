@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>How to Build a Blog Scraper | Tech Blog</title>
+  <meta name="description" content="A comprehensive guide to building a production-quality blog scraper.">
+  <meta name="author" content="Jane Smith">
+  <meta property="og:title" content="How to Build a Blog Scraper">
+  <meta property="og:description" content="A comprehensive guide to building a production-quality blog scraper.">
+  <meta property="og:site_name" content="Tech Blog">
+  <meta property="og:type" content="article">
+  <meta property="og:image" content="https://example.com/img/diagram.png">
+  <meta property="og:image:alt" content="Architecture diagram">
+  <meta property="article:published_time" content="2024-01-15T10:00:00Z">
+  <meta property="article:modified_time" content="2024-01-16T08:00:00Z">
+  <meta property="article:author" content="Jane Smith">
+  <meta property="article:tag" content="python">
+  <meta property="article:tag" content="web-scraping">
+  <link rel="canonical" href="https://example.com/blog/how-to-build-a-blog-scraper">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "How to Build a Blog Scraper",
+    "author": {"@type": "Person", "name": "Jane Smith"},
+    "datePublished": "2024-01-15T10:00:00Z",
+    "dateModified": "2024-01-16T08:00:00Z",
+    "description": "A comprehensive guide to building a production-quality blog scraper.",
+    "keywords": "python, web-scraping, scrapy"
+  }
+  </script>
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/blog">Blog</a>
+    <a href="/about">About</a>
+  </nav>
+  <article>
+    <h1>How to Build a Blog Scraper</h1>
+    <p class="byline">By Jane Smith | January 15, 2024</p>
+
+    <p>Building a blog scraper is a fascinating challenge that combines web crawling,
+    HTML parsing, and content extraction techniques. In this guide, we'll walk through
+    building a production-quality system that works on any blog without site-specific
+    selectors.</p>
+
+    <h2>Getting Started</h2>
+
+    <p>First, you need to understand the structure of the blog you want to scrape.
+    The key insight is that blogs, despite their visual variety, all have similar
+    structural patterns: a title, some metadata, and a body of content.</p>
+
+    <pre><code class="language-python">import scrapy
+
+class BlogSpider(scrapy.Spider):
+    name = 'blog'
+    start_urls = ['https://example.com/blog']
+
+    def parse(self, response):
+        for article in response.css('article'):
+            yield {'title': article.css('h1::text').get()}
+</code></pre>
+
+    <h2>Handling Different Templates</h2>
+
+    <p>Different blogs use different page templates. The key is to use deterministic
+    algorithms rather than site-specific CSS selectors. This approach ensures your
+    scraper works across thousands of different blog designs.</p>
+
+    <ul>
+      <li>Use readability-lxml for main content extraction</li>
+      <li>Fall back to trafilatura if readability fails</li>
+      <li>Use DOM heuristics as a last resort</li>
+    </ul>
+
+    <h2>Extracting Metadata</h2>
+
+    <p>Most modern blogs include rich metadata in JSON-LD, Open Graph, or Twitter Card
+    format. By parsing these structured data sources first, we can reliably extract
+    the title, author, publication date, and tags without scraping the visual HTML.</p>
+
+    <blockquote>
+      <p>The best scrapers are the ones that work on any site without modification.</p>
+    </blockquote>
+
+    <h2>Performance Considerations</h2>
+
+    <p>When scraping at scale, you need to be polite to the servers you're crawling.
+    Use Scrapy's AutoThrottle middleware to automatically adjust your crawl speed
+    based on server latency. Respect robots.txt and add appropriate delays between
+    requests.</p>
+
+    <figure>
+      <img src="https://example.com/img/diagram.png" alt="Architecture diagram">
+      <figcaption>Figure 1: Blog scraper architecture</figcaption>
+    </figure>
+
+    <p>With these techniques, you can build a scraper that reliably extracts content
+    from virtually any blog on the internet, regardless of its technical stack or
+    visual design.</p>
+  </article>
+  <footer>
+    <p>&copy; 2024 Tech Blog</p>
+  </footer>
+</body>
+</html>

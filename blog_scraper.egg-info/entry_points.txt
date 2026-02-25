@@ -1,0 +1,2 @@
+[console_scripts]
+blog-scraper = blog_scraper.__main__:main

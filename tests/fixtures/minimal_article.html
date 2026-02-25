@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>A Simple Post</title>
+</head>
+<body>
+  <div class="content">
+    <h1>A Simple Post</h1>
+    <p>This is a minimal article with no metadata at all. It only has an H1 and a few paragraphs.
+    Despite the lack of metadata, the content extractor should still be able to identify this as
+    an article and extract the main content reliably using DOM heuristics.</p>
+    <p>The extraction pipeline tries readability-lxml first, then trafilatura, and finally falls
+    back to DOM-based heuristics that score block elements by paragraph density.</p>
+    <p>Even without JSON-LD, Open Graph tags, or other structured metadata, the article scorer
+    should assign a reasonable score based on the presence of an H1, sufficient word count,
+    and paragraph structure.</p>
+    <p>This test fixture validates that the scraper works even on bare-bones HTML blogs
+    without any structured metadata.</p>
+  </div>
+</body>
+</html>
