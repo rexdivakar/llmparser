@@ -50,6 +50,10 @@ class ArticleItem(scrapy.Item):
     # Raw signals
     raw_metadata = scrapy.Field()
 
+    # Adaptive fetch provenance
+    fetch_strategy = scrapy.Field()   # "static" | "amp" | "mobile_ua" | "playwright" | …
+    page_type = scrapy.Field()        # "static_html" | "js_spa" | "cookie_walled" | …
+
     # Pipeline-internal: slug assigned by ArticleWriterPipeline
     _slug = scrapy.Field()
 
@@ -121,6 +125,10 @@ class ArticleSchema(BaseModel):
     # Raw signals
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # Adaptive fetch provenance
+    fetch_strategy: Optional[str] = None   # which strategy produced the HTML
+    page_type: Optional[str] = None        # classified page type
+
     @field_validator("url", "canonical_url", mode="before")
     @classmethod
     def strip_url(cls, v: Any) -> Any:
@@ -160,4 +168,6 @@ def article_item_to_schema(item: ArticleItem) -> ArticleSchema:
         article_score=item.get("article_score") or 0,
         scraped_at=item.get("scraped_at", ""),
         raw_metadata=item.get("raw_metadata") or {},
+        fetch_strategy=item.get("fetch_strategy"),
+        page_type=item.get("page_type"),
     )

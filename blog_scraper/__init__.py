@@ -9,7 +9,7 @@ Quick single-URL usage::
     print(article.content_markdown)
 """
 
-from blog_scraper.query import FetchError, extract, fetch, fetch_html
+from blog_scraper.query import FetchError, extract, fetch, fetch_batch, fetch_html
 
 __version__ = "0.1.0"
-__all__ = ["fetch", "fetch_html", "extract", "FetchError"]
+__all__ = ["fetch", "fetch_batch", "fetch_html", "extract", "FetchError"]

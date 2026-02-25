@@ -143,17 +143,24 @@ def _process_element(el: Tag, base_url: str, blocks: list[dict]) -> None:
         return
 
 
-def html_to_blocks(html: str, base_url: str = "") -> list[dict]:
+def html_to_blocks(
+    html: str,
+    base_url: str = "",
+    soup: BeautifulSoup | None = None,
+) -> list[dict]:
     """Parse *html* into a flat list of typed content blocks.
 
     Traverses the DOM and emits blocks for headings, paragraphs, images,
     code, lists, block quotes, and tables.  Does NOT recurse into
     *_LEAF_CONTAINERS* (they are emitted as atomic blocks).
+
+    Pass a pre-parsed *soup* to avoid re-parsing the HTML.
     """
-    try:
-        soup = BeautifulSoup(html, "lxml")
-    except Exception:
-        return []
+    if soup is None:
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            return []
 
     # Remove boilerplate
     for tag_name in ("nav", "header", "footer", "script", "style", "noscript"):

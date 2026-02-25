@@ -1,4 +1,4 @@
-"""Scrapy item pipelines: validation → article writer → index writer.
+"""Scrapy item pipelines: dedup → validation → article writer → index writer.
 
 Scrapy 2.14+ compatible: open_spider, close_spider, and process_item do NOT
 take a `spider` argument.  Spider identity is not needed at runtime.
@@ -6,6 +6,7 @@ take a `spider` argument.  Spider identity is not needed at runtime.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -59,6 +60,40 @@ def _write_json(path: Path, data: dict | list) -> None:
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline 0: content-hash deduplication
+# ---------------------------------------------------------------------------
+
+class ContentHashDedupPipeline:
+    """Drop articles whose body text matches a previously-seen article.
+
+    Uses a 16-char SHA-256 prefix of the first 5 000 characters of
+    ``content_text`` so near-identical pages (syndicated posts, canonical
+    mismatches) are only written once per crawl.
+    """
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    def process_item(self, item: Any) -> Any:
+        if not isinstance(item, ArticleItem):
+            return item
+
+        content = (item.get("content_text") or "").strip()
+        if len(content) < 100:
+            # Too short to hash reliably; let validation decide
+            return item
+
+        digest = hashlib.sha256(content[:5_000].encode()).hexdigest()[:16]
+        if digest in self._seen:
+            from scrapy.exceptions import DropItem  # type: ignore[import-untyped]
+            raise DropItem(
+                f"Duplicate content (hash={digest}): {item.get('url', '')}"
+            )
+        self._seen.add(digest)
+        return item
 
 
 # ---------------------------------------------------------------------------
@@ -196,16 +231,25 @@ class ArticleWriterPipeline:
 # ---------------------------------------------------------------------------
 
 class IndexWriterPipeline:
-    """Accumulate article summaries and write out/index.json on spider close."""
+    """Stream article summaries to a temp JSONL file; sort and write index.json on close.
+
+    Streaming avoids accumulating all entries in memory for large crawls.
+    """
 
     def __init__(self, index_path: Path) -> None:
         self.index_path = index_path
-        self._entries: list[dict] = []
+        self._tmp_path = index_path.with_suffix(".jsonl.tmp")
+        self._handle: Any = None
+        self._count = 0
 
     @classmethod
     def from_crawler(cls, crawler: "Crawler") -> "IndexWriterPipeline":
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(index_path=out_dir / "index.json")
+
+    def open_spider(self) -> None:
+        self._tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self._tmp_path.open("w", encoding="utf-8")
 
     def process_item(self, item: Any) -> Any:
         if not isinstance(item, ArticleItem):
@@ -215,32 +259,49 @@ class IndexWriterPipeline:
         schema: ArticleSchema = article_item_to_schema(item)
         slug = item.get("_slug", _slug_from_url(schema.url))
 
-        self._entries.append(
-            {
-                "slug": slug,
-                "url": schema.url,
-                "title": schema.title,
-                "author": schema.author,
-                "published_at": schema.published_at,
-                "summary": schema.summary,
-                "tags": schema.tags,
-                "word_count": schema.word_count,
-                "reading_time_minutes": schema.reading_time_minutes,
-                "extraction_method_used": schema.extraction_method_used,
-            }
-        )
+        entry = {
+            "slug": slug,
+            "url": schema.url,
+            "title": schema.title,
+            "author": schema.author,
+            "published_at": schema.published_at,
+            "summary": schema.summary,
+            "tags": schema.tags,
+            "word_count": schema.word_count,
+            "reading_time_minutes": schema.reading_time_minutes,
+            "extraction_method_used": schema.extraction_method_used,
+        }
+        if self._handle:
+            self._handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self._handle.flush()
+        self._count += 1
         return item
 
     def close_spider(self) -> None:
-        # Sort by published_at descending; unparseable dates go last
-        def _sort_key(entry: dict) -> str:
-            return entry.get("published_at") or ""
+        if self._handle:
+            self._handle.close()
+            self._handle = None
 
-        self._entries.sort(key=_sort_key, reverse=True)
+        # Read back, sort by published_at descending, write final index.json
+        entries: list[dict] = []
+        if self._tmp_path.exists():
+            for line in self._tmp_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except Exception:
+                        pass
+            try:
+                self._tmp_path.unlink()
+            except Exception:
+                pass
+
+        entries.sort(key=lambda e: e.get("published_at") or "", reverse=True)
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json(self.index_path, self._entries)
+        _write_json(self.index_path, entries)
         logger.info(
             "IndexWriterPipeline: wrote %d entries to %s",
-            len(self._entries),
+            len(entries),
             self.index_path,
         )

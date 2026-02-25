@@ -31,3 +31,18 @@ def jsapp_html() -> str:
 @pytest.fixture
 def minimal_article_html() -> str:
     return _read_fixture("minimal_article.html")
+
+
+@pytest.fixture
+def spa_no_framework_html() -> str:
+    return _read_fixture("spa_no_framework.html")
+
+
+@pytest.fixture
+def cookie_wall_html() -> str:
+    return _read_fixture("cookie_wall.html")
+
+
+@pytest.fixture
+def wpconsent_template_html() -> str:
+    return _read_fixture("wpconsent_template.html")

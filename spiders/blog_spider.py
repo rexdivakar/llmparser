@@ -19,10 +19,12 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterator
 from urllib.parse import urljoin, urlparse
 
 import scrapy
+from bs4 import BeautifulSoup
 from scrapy.http import Request, Response
 
 from blog_scraper.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
@@ -103,6 +105,9 @@ class BlogSpider(scrapy.Spider):
         include_regex: str | None = None,
         exclude_regex: str | None = None,
         out_dir: str = "./out",
+        allow_subdomains: bool = False,      # #3 multi-domain
+        extra_domains: str | None = None,    # #3 multi-domain
+        resume: bool = False,                # #2 incremental crawl
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -111,20 +116,63 @@ class BlogSpider(scrapy.Spider):
         self.max_depth = int(max_depth)
         self.render_js = render_js
         self.out_dir = out_dir
+        self._allow_subdomains = bool(allow_subdomains)
 
         self._include_re = re.compile(include_regex) if include_regex else None
         self._exclude_re = re.compile(exclude_regex) if exclude_regex else None
 
         parsed = urlparse(self.start_url)
         self.allowed_domain = parsed.netloc.lower()
-        self.allowed_domains = [self.allowed_domain]
 
-        self._seen_urls: set[str] = set()
+        # #3 – build the full set of explicitly allowed domains
+        extra: set[str] = set()
+        if extra_domains:
+            extra = {d.strip().lower() for d in extra_domains.split(",") if d.strip()}
+        self._allowed_domains_set: frozenset[str] = frozenset(
+            {self.allowed_domain} | extra
+        )
+        # Keep Scrapy's built-in domain filter in sync
+        self.allowed_domains = list(self._allowed_domains_set)
+
+        # #2 – incremental resume: load previously-seen URLs from disk
+        self._seen_urls_path = (
+            (Path(out_dir) / "seen_urls.txt") if resume else None
+        )
+        self._seen_urls: set[str] = self._load_seen_urls()
+        self._seen_urls_handle = (
+            self._seen_urls_path.open("a", encoding="utf-8")
+            if self._seen_urls_path
+            else None
+        )
+
         self._playwright_attempted: set[str] = set()
         self._pages_crawled = 0
-        self._skipped: list[dict] = []
+        # #9 – no longer accumulate skipped in memory; written directly in _log_skip
+        self._skipped_count = 0
 
         self._heuristics = Heuristics()
+
+    def _load_seen_urls(self) -> set[str]:
+        """Load seen URLs from disk for resume (#2). Returns empty set if not resuming."""
+        if not self._seen_urls_path or not self._seen_urls_path.exists():
+            return set()
+        try:
+            urls = set(self._seen_urls_path.read_text(encoding="utf-8").splitlines())
+            logger.info("Resume: loaded %d previously-seen URLs", len(urls))
+            return urls
+        except OSError as exc:
+            logger.warning("Could not read seen_urls.txt: %s", exc)
+            return set()
+
+    def _mark_seen(self, norm: str) -> None:
+        """Add URL to seen set and persist it for resume (#2, #9)."""
+        self._seen_urls.add(norm)
+        if self._seen_urls_handle:
+            try:
+                self._seen_urls_handle.write(norm + "\n")
+                self._seen_urls_handle.flush()
+            except OSError as exc:
+                logger.warning("Could not write to seen_urls.txt: %s", exc)
 
     # ------------------------------------------------------------------
     # Start requests
@@ -147,7 +195,7 @@ class BlogSpider(scrapy.Spider):
 
         # Always also crawl the start URL directly
         norm = normalize_url(self.start_url)
-        self._seen_urls.add(norm)
+        self._mark_seen(norm)
         yield self._make_request(
             self.start_url,
             callback=self.parse,
@@ -199,7 +247,7 @@ class BlogSpider(scrapy.Spider):
                     continue
                 if self._pages_crawled >= self.max_pages:
                     return
-                self._seen_urls.add(norm)
+                self._mark_seen(norm)
                 self._pages_crawled += 1
                 yield self._make_request(url, callback=self.parse, meta={"depth": 0})
 
@@ -236,12 +284,19 @@ class BlogSpider(scrapy.Spider):
                 yield self._make_playwright_request(url, depth)
                 return
 
+        # Parse HTML once — shared across scoring, extraction, link discovery (#1)
+        try:
+            page_soup: BeautifulSoup | None = BeautifulSoup(html, "lxml")
+        except Exception as exc:
+            logger.warning("BeautifulSoup parse failed for %s: %s", url, exc)
+            page_soup = None
+
         # Score this page and attempt extraction if it looks article-like
-        score = self._heuristics.article_score(url, html)
+        score = self._heuristics.article_score(url, html, soup=page_soup)
         logger.debug("Article score=%d for %s", score, url)
 
         if score >= ARTICLE_SCORE_THRESHOLD and self._should_extract(url):
-            item = self._extract_article(url, html, score)
+            item = self._extract_article(url, html, score, soup=page_soup)
             if item:
                 yield item
             else:
@@ -255,15 +310,21 @@ class BlogSpider(scrapy.Spider):
 
         # Discover and enqueue new links (BFS)
         if depth < self.max_depth:
-            yield from self._discover_links(response, html, depth)
+            yield from self._discover_links(response, html, depth, soup=page_soup)
 
     # ------------------------------------------------------------------
     # Article extraction
     # ------------------------------------------------------------------
 
-    def _extract_article(self, url: str, html: str, score: int) -> ArticleItem | None:
+    def _extract_article(
+        self,
+        url: str,
+        html: str,
+        score: int,
+        soup: BeautifulSoup | None = None,
+    ) -> ArticleItem | None:
         try:
-            meta = extract_metadata(html, page_url=url)
+            meta = extract_metadata(html, page_url=url, soup=soup)
         except Exception as exc:
             logger.warning("Metadata extraction failed for %s: %s", url, exc)
             meta = {}
@@ -280,21 +341,25 @@ class BlogSpider(scrapy.Spider):
 
         try:
             content_md = html_to_markdown(result.html)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Markdown conversion failed for %s: %s", url, exc)
             content_md = ""
 
         try:
-            from bs4 import BeautifulSoup
-            content_text = BeautifulSoup(result.html, "lxml").get_text(separator=" ")
-            content_text = " ".join(content_text.split())
-        except Exception:
+            # result.html is the extracted article body — separate from the full page soup
+            content_text = " ".join(
+                BeautifulSoup(result.html, "lxml").get_text(separator=" ").split()
+            )
+        except Exception as exc:
+            logger.warning("Text extraction failed for %s: %s", url, exc)
             content_text = ""
 
         word_count = len(content_text.split())
 
         try:
             blocks = html_to_blocks(result.html, base_url=url)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Block extraction failed for %s: %s", url, exc)
             blocks = []
 
         try:
@@ -304,12 +369,14 @@ class BlogSpider(scrapy.Spider):
             for img in meta.get("images", []):
                 if img["url"] not in existing_urls:
                     images.insert(0, img)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Image extraction failed for %s: %s", url, exc)
             images = []
 
         try:
             links = extract_links(html, base_url=url, base_domain=self.allowed_domain)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Link extraction failed for %s: %s", url, exc)
             links = []
 
         canonical = meta.get("canonical_url") or url
@@ -343,7 +410,6 @@ class BlogSpider(scrapy.Spider):
     @staticmethod
     def _fallback_title(html: str) -> str:
         try:
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "lxml")
             t = soup.find("title")
             if t:
@@ -351,8 +417,8 @@ class BlogSpider(scrapy.Spider):
             h1 = soup.find("h1")
             if h1:
                 return h1.get_text().strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Fallback title extraction failed: %s", exc)
         return ""
 
     # ------------------------------------------------------------------
@@ -360,13 +426,22 @@ class BlogSpider(scrapy.Spider):
     # ------------------------------------------------------------------
 
     def _discover_links(
-        self, response: Response, html: str, current_depth: int
+        self,
+        response: Response,
+        html: str,
+        current_depth: int,
+        soup: BeautifulSoup | None = None,
     ) -> Iterator[Request]:
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, "lxml")
-        except Exception:
-            return
+        if soup is None:
+            try:
+                soup = BeautifulSoup(html, "lxml")
+            except Exception as exc:
+                logger.warning(
+                    "BeautifulSoup parse failed for link discovery on %s: %s",
+                    response.url,
+                    exc,
+                )
+                return
 
         for a in soup.find_all("a", href=True):
             href = str(a.get("href") or "").strip()
@@ -388,7 +463,7 @@ class BlogSpider(scrapy.Spider):
             if self._pages_crawled >= self.max_pages:
                 return
 
-            self._seen_urls.add(norm)
+            self._mark_seen(norm)
             self._pages_crawled += 1
             yield self._make_request(
                 absolute,
@@ -417,8 +492,13 @@ class BlogSpider(scrapy.Spider):
         if parsed.scheme not in ("http", "https"):
             return False
 
-        # Same domain only
-        if parsed.netloc.lower() != self.allowed_domain:
+        # Domain check (#3 multi-domain)
+        netloc = parsed.netloc.lower()
+        in_explicit = netloc in self._allowed_domains_set
+        in_subdomain = self._allow_subdomains and any(
+            netloc.endswith("." + d) for d in self._allowed_domains_set
+        )
+        if not (in_explicit or in_subdomain):
             return False
 
         # Skip obvious non-HTML assets
@@ -486,32 +566,36 @@ class BlogSpider(scrapy.Spider):
     # ------------------------------------------------------------------
 
     def _log_skip(self, url: str, reason: str) -> None:
-        self._skipped.append(
-            {
-                "url": url,
-                "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        """Write skip entry directly to disk — no in-memory accumulation (#9)."""
+        self._skipped_count += 1
         logger.debug("Skipped %s: %s", url, reason)
-
-    def closed(self, reason: str) -> None:
-        """Write skipped URL log and print summary when spider closes."""
-        from pathlib import Path
-
-        out = Path(self.out_dir)
-        skipped_path = out / "skipped.jsonl"
+        skipped_path = Path(self.out_dir) / "skipped.jsonl"
         try:
             skipped_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = json.dumps(
+                {
+                    "url": url,
+                    "reason": reason,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             with skipped_path.open("a", encoding="utf-8") as f:
-                for entry in self._skipped:
-                    f.write(json.dumps(entry) + "\n")
-        except Exception as exc:
-            logger.warning("Could not write skipped log: %s", exc)
+                f.write(entry + "\n")
+        except OSError as exc:
+            logger.warning("Could not write skip entry for %s: %s", url, exc)
+
+    def closed(self, reason: str) -> None:
+        """Close open file handles and log final stats when spider shuts down."""
+        # Close the seen_urls persistence handle (#2)
+        if self._seen_urls_handle:
+            try:
+                self._seen_urls_handle.close()
+            except OSError as exc:
+                logger.warning("Could not close seen_urls.txt: %s", exc)
 
         logger.info(
             "Spider closed (%s): crawled=%d skipped=%d",
             reason,
             self._pages_crawled,
-            len(self._skipped),
+            self._skipped_count,
         )

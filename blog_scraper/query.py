@@ -32,9 +32,13 @@ Low-level access::
 
 from __future__ import annotations
 
+import gzip
 import logging
+import random
+import time
 import urllib.error
 import urllib.request
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -82,18 +86,26 @@ class FetchError(RuntimeError):
 # Low-level HTTP fetch
 # ---------------------------------------------------------------------------
 
+_RETRY_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
 def fetch_html(
     url: str,
     *,
     timeout: int = 30,
     user_agent: str | None = None,
+    max_retries: int = 3,
 ) -> str:
     """Fetch *url* and return the response body as a decoded string.
 
+    Retries up to *max_retries* times with jittered exponential backoff on
+    transient errors (429, 500, 502, 503, 504, and network-level failures).
+
     Args:
-        url:        Fully-qualified HTTP/HTTPS URL.
-        timeout:    Request timeout in seconds (default 30).
-        user_agent: Override the default browser User-Agent string.
+        url:         Fully-qualified HTTP/HTTPS URL.
+        timeout:     Request timeout in seconds (default 30).
+        user_agent:  Override the default browser User-Agent string.
+        max_retries: Maximum number of retry attempts (default 3).
 
     Returns:
         Response body decoded to ``str``.
@@ -110,31 +122,103 @@ def fetch_html(
         url,
         headers={
             "User-Agent": ua,
-            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,image/avif,image/webp,*/*;q=0.8"
+            ),
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
         },
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw: bytes = resp.read()
-            # Detect encoding from Content-Type header, fall back to utf-8
-            ct: str = resp.headers.get_content_charset("utf-8") or "utf-8"
-            try:
-                return raw.decode(ct, errors="replace")
-            except (LookupError, ValueError):
-                return raw.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        raise FetchError(
-            f"HTTP {exc.code} fetching {url}: {exc.reason}",
-            url=url,
-            status=exc.code,
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise FetchError(f"URL error fetching {url}: {exc.reason}", url=url) from exc
-    except OSError as exc:
-        raise FetchError(f"Network error fetching {url}: {exc}", url=url) from exc
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw: bytes = resp.read()
+                # urllib does NOT auto-decompress Content-Encoding — do it manually
+                encoding = resp.headers.get("Content-Encoding", "").lower().strip()
+                if encoding == "gzip":
+                    try:
+                        raw = gzip.decompress(raw)
+                    except OSError as exc:
+                        raise FetchError(
+                            f"gzip decompression failed for {url}: {exc}", url=url
+                        ) from exc
+                elif encoding in ("deflate", "zlib"):
+                    try:
+                        raw = zlib.decompress(raw)
+                    except zlib.error as exc:
+                        raise FetchError(
+                            f"deflate decompression failed for {url}: {exc}", url=url
+                        ) from exc
+                elif encoding == "br":
+                    raise FetchError(
+                        f"Brotli-encoded response from {url} — install 'brotli' or "
+                        "use render_js=True to let Playwright handle it",
+                        url=url,
+                    )
+                # Detect charset from Content-Type, fall back to utf-8
+                ct: str = resp.headers.get_content_charset("utf-8") or "utf-8"
+                try:
+                    return raw.decode(ct, errors="replace")
+                except (LookupError, ValueError):
+                    return raw.decode("utf-8", errors="replace")
+
+        except urllib.error.HTTPError as exc:
+            if exc.code in _RETRY_CODES and attempt < max_retries:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logger.debug(
+                    "HTTP %d for %s — retrying in %.1fs (attempt %d/%d)",
+                    exc.code, url, delay, attempt + 1, max_retries,
+                )
+                time.sleep(delay)
+                last_exc = FetchError(
+                    f"HTTP {exc.code} fetching {url}: {exc.reason}",
+                    url=url,
+                    status=exc.code,
+                )
+                continue
+            raise FetchError(
+                f"HTTP {exc.code} fetching {url}: {exc.reason}",
+                url=url,
+                status=exc.code,
+            ) from exc
+
+        except urllib.error.URLError as exc:
+            if attempt < max_retries:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logger.debug(
+                    "URL error for %s — retrying in %.1fs (attempt %d/%d): %s",
+                    url, delay, attempt + 1, max_retries, exc.reason,
+                )
+                time.sleep(delay)
+                last_exc = FetchError(f"URL error fetching {url}: {exc.reason}", url=url)
+                continue
+            raise FetchError(f"URL error fetching {url}: {exc.reason}", url=url) from exc
+
+        except OSError as exc:
+            if attempt < max_retries:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logger.debug(
+                    "Network error for %s — retrying in %.1fs (attempt %d/%d): %s",
+                    url, delay, attempt + 1, max_retries, exc,
+                )
+                time.sleep(delay)
+                last_exc = FetchError(f"Network error fetching {url}: {exc}", url=url)
+                continue
+            raise FetchError(f"Network error fetching {url}: {exc}", url=url) from exc
+
+    # Should only reach here if all retries are exhausted via continue
+    raise last_exc or FetchError(f"All retries exhausted for {url}", url=url)
 
 
 def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
@@ -150,14 +234,117 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
             try:
-                page = browser.new_page(
+                ctx = browser.new_context(
                     user_agent=_DEFAULT_UA,
                     java_script_enabled=True,
+                    viewport={"width": 1920, "height": 1080},
+                    # Accept all cookies so cookie-consent walls auto-dismiss
+                    extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
                 )
-                page.goto(url, timeout=timeout * 1_000, wait_until="networkidle")
-                return page.content()
+                page = ctx.new_page()
+                effective_timeout = max(timeout, 60) * 1_000
+
+                # Phase 1: wait for "load" (HTML + synchronous scripts ready)
+                try:
+                    page.goto(url, timeout=effective_timeout, wait_until="load")
+                except Exception:
+                    logger.warning(
+                        "Playwright 'load' timed out for %s — continuing", url
+                    )
+
+                # Phase 2: short networkidle wait so SPAs (Angular, React, Vue)
+                # can finish their initial XHR/fetch bootstrap calls.
+                # We cap at 12 s — many analytics-heavy sites never fully settle.
+                try:
+                    page.wait_for_load_state("networkidle", timeout=12_000)
+                    logger.debug("Playwright networkidle reached for %s", url)
+                except Exception:
+                    logger.debug(
+                        "Playwright networkidle timed out for %s — continuing", url
+                    )
+
+                # Phase 3: wait for the DOM to actually contain meaningful text.
+                # This catches SPAs that finish rendering *after* networkidle
+                # (e.g. Angular apps that stream data via WebSocket or long-poll).
+                try:
+                    page.wait_for_function(
+                        "() => document.body.innerText.trim().split(/\\s+/).filter(Boolean).length > 50",
+                        timeout=12_000,
+                    )
+                    logger.debug("Playwright DOM hydration confirmed for %s", url)
+                except Exception:
+                    logger.debug(
+                        "Playwright DOM hydration wait timed out for %s — "
+                        "grabbing partial content",
+                        url,
+                    )
+
+                # Phase 4: expand accordion / collapsible sections so their
+                # content is present in the DOM before we capture the HTML.
+                # Targets: aria-expanded=false, <details>, mat-expansion-panel,
+                # and common CSS-hidden expandable containers.
+                try:
+                    expanded: int = page.evaluate("""() => {
+                        let count = 0;
+
+                        // ARIA-based accordions (most frameworks)
+                        document.querySelectorAll('[aria-expanded="false"]').forEach(el => {
+                            try { el.click(); count++; } catch (e) {}
+                        });
+
+                        // Native HTML <details> (not yet open)
+                        document.querySelectorAll('details:not([open])').forEach(el => {
+                            el.setAttribute('open', '');
+                            count++;
+                        });
+
+                        // Angular Material / CDK expansion panels
+                        document.querySelectorAll(
+                            'mat-expansion-panel:not(.mat-expanded), ' +
+                            '.mat-expansion-panel:not(.mat-expanded)'
+                        ).forEach(el => {
+                            const header = el.querySelector('mat-expansion-panel-header, .mat-expansion-panel-header');
+                            if (header) { try { header.click(); count++; } catch(e) {} }
+                        });
+
+                        // Bootstrap / generic collapsibles
+                        document.querySelectorAll(
+                            '.collapse:not(.show), [data-bs-toggle="collapse"], [data-toggle="collapse"]'
+                        ).forEach(el => {
+                            try { el.click(); count++; } catch (e) {}
+                        });
+
+                        return count;
+                    }""")
+                    if expanded > 0:
+                        logger.debug(
+                            "Playwright expanded %d accordion sections for %s",
+                            expanded, url,
+                        )
+                        # Wait for any AJAX content triggered by the expansions
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=6_000)
+                        except Exception:
+                            page.wait_for_timeout(1_500)
+                except Exception as exc:
+                    logger.debug("Playwright accordion expansion failed for %s: %s", url, exc)
+
+                html: str = page.content()
+                if not html.strip():
+                    raise FetchError(
+                        f"Playwright returned empty page for {url}", url=url
+                    )
+                return html
             finally:
                 browser.close()
     except FetchError:
@@ -170,7 +357,13 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
 # Extraction (pure HTML → ArticleSchema, no network)
 # ---------------------------------------------------------------------------
 
-def extract(html: str, *, url: str = "") -> ArticleSchema:
+def extract(
+    html: str,
+    *,
+    url: str = "",
+    fetch_strategy: str | None = None,
+    page_type: str | None = None,
+) -> ArticleSchema:
     """Extract article data from *html* and return an :class:`ArticleSchema`.
 
     This function runs the full extraction pipeline (metadata, main content,
@@ -280,6 +473,8 @@ def extract(html: str, *, url: str = "") -> ArticleSchema:
         article_score=_heuristics.article_score(url, html),
         scraped_at=datetime.now(timezone.utc).isoformat(),
         raw_metadata=meta.get("raw_metadata") or {},
+        fetch_strategy=fetch_strategy,
+        page_type=page_type,
     )
 
 
@@ -332,8 +527,109 @@ def fetch(
     logger.info("fetch: %s (render_js=%s)", url, render_js)
 
     if render_js:
+        # Caller explicitly requested Playwright — skip auto-detection
         html = _fetch_html_playwright(url, timeout=timeout)
-    else:
-        html = fetch_html(url, timeout=timeout, user_agent=user_agent)
+        return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
 
-    return extract(html, url=url)
+    # Adaptive engine: classify page type and select the best strategy
+    from blog_scraper.extractors.adaptive import adaptive_fetch_html  # noqa: PLC0415
+
+    result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent)
+    article = extract(
+        result.html,
+        url=url,
+        fetch_strategy=result.strategy_used,
+        page_type=result.classification.page_type.value,
+    )
+    # Embed classification signals in raw_metadata so callers (e.g. evaluate.py)
+    # can display analysis without making a second HTTP request.
+    sig = result.classification.signals
+    article.raw_metadata["_classification"] = {
+        "reason":        result.classification.reason,
+        "confidence":    result.classification.confidence,
+        "frameworks":    sig.frameworks_detected,
+        "amp_url":       sig.amp_url,
+        "feed_url":      sig.feed_url,
+        "body_word_count": sig.body_word_count,
+    }
+    return article
+
+
+# ---------------------------------------------------------------------------
+# Batch API
+# ---------------------------------------------------------------------------
+
+def fetch_batch(
+    urls: list[str],
+    *,
+    max_workers: int = 8,
+    timeout: int = 30,
+    user_agent: str | None = None,
+    on_error: str = "skip",
+) -> list[ArticleSchema]:
+    """Fetch multiple URLs concurrently and return extracted articles.
+
+    Uses a :class:`~concurrent.futures.ThreadPoolExecutor` to run
+    :func:`fetch` in parallel.  Results are returned in the same order as
+    *urls* regardless of which requests finish first.
+
+    Args:
+        urls:        List of fully-qualified HTTP/HTTPS URLs to scrape.
+        max_workers: Maximum number of concurrent fetch threads (default 8).
+        timeout:     Per-request network timeout in seconds (default 30).
+        user_agent:  Custom User-Agent string for all requests.
+        on_error:    How to handle individual URL failures:
+                     ``"skip"`` (default) — omit failed URLs from results;
+                     ``"raise"`` — re-raise the first exception immediately;
+                     ``"include"`` — include ``None`` in results for failures.
+
+    Returns:
+        List of :class:`~blog_scraper.items.ArticleSchema` instances.
+        With ``on_error="skip"`` the list may be shorter than *urls*.
+        With ``on_error="include"`` the list has exactly ``len(urls)`` entries,
+        with ``None`` for URLs that failed.
+
+    Raises:
+        :class:`FetchError`: Only when ``on_error="raise"`` and any URL fails.
+        :class:`ValueError`: For unknown *on_error* values.
+
+    Example::
+
+        from blog_scraper import fetch_batch
+
+        articles = fetch_batch([
+            "https://example.com/post/1",
+            "https://example.com/post/2",
+        ], max_workers=4)
+        for article in articles:
+            print(article.title, article.word_count)
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+
+    if on_error not in ("skip", "raise", "include"):
+        raise ValueError(f"on_error must be 'skip', 'raise', or 'include'; got {on_error!r}")
+
+    # Preserve input order: slot results by original index
+    results: list[ArticleSchema | None] = [None] * len(urls)
+
+    def _fetch_one(idx: int, url: str) -> tuple[int, ArticleSchema | None]:
+        try:
+            return idx, fetch(url, timeout=timeout, user_agent=user_agent)
+        except Exception as exc:
+            if on_error == "raise":
+                raise
+            logger.warning("fetch_batch: failed to fetch %s: %s", url, exc)
+            return idx, None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_fetch_one, i, url): i
+            for i, url in enumerate(urls)
+        }
+        for future in as_completed(futures):
+            idx, article = future.result()
+            results[idx] = article
+
+    if on_error == "include":
+        return results  # type: ignore[return-value]
+    return [r for r in results if r is not None]

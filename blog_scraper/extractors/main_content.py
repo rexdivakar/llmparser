@@ -8,6 +8,7 @@ Tier 3: DOM heuristic     (paragraph density + priority CSS selectors)
 from __future__ import annotations
 
 import logging
+import re
 from typing import NamedTuple
 
 from bs4 import BeautifulSoup, Tag
@@ -74,6 +75,97 @@ _NOISE_SUBSTRINGS: tuple[str, ...] = (
     "modal",
     "widget",
 )
+
+# ---------------------------------------------------------------------------
+# Cookie-consent / GDPR overlay removal
+# ---------------------------------------------------------------------------
+
+# CSS selectors for known cookie-consent widgets — removed before any extractor runs
+_COOKIE_CONSENT_SELECTORS: tuple[str, ...] = (
+    # CookieYes / CookieLawInfo
+    ".cky-consent-container", ".cookieyes-modal",
+    "#cookie-law-info-bar", ".cli-modal", ".cli-settings-overlay",
+    # Cookiebot
+    "#CybotCookiebotDialog", "#CybotCookiebotDialogBodyContent",
+    # OneTrust
+    "#onetrust-consent-sdk", "#onetrust-banner-sdk", "#onetrust-pc-sdk",
+    # Complianz
+    "#cmplz-cookiebanner-container", ".cmplz-cookiebanner",
+    # Borlabs
+    "#BorlabsCookieBox",
+    # WP GDPR Cookie Notice
+    "#cookie_notice", "#gdpr-cookie-notice",
+    # Generic
+    ".cookie-banner", ".cookie-notice", ".cookie-popup",
+    ".cookie-modal", ".cookie-overlay", ".cookie-consent",
+    "#cookie-notice", "#cookie-banner", "#cookie-popup",
+    ".gdpr-overlay", "#gdpr_overlay", ".gdpr-banner",
+    "[aria-label='cookieconsent']",
+)
+
+# Class/id keywords that reliably identify consent widgets (substring match)
+_CONSENT_WIDGET_KEYWORDS: tuple[str, ...] = (
+    "cookieyes", "cookiebot", "cookiehub", "onetrust",
+    "borlabs", "complianz", "cookielawinfo", "cky-",
+    "wpconsent",          # WPConsent plugin (renders inside <template>)
+    "cookie-consent",
+    "gdpr-consent",
+)
+
+
+def _strip_cookie_consent(soup: BeautifulSoup) -> None:
+    """Remove cookie-consent / GDPR overlay elements from *soup* in-place."""
+    # Named selectors first (fast, specific)
+    for selector in _COOKIE_CONSENT_SELECTORS:
+        try:
+            for el in soup.select(selector):
+                if isinstance(el, Tag):
+                    el.decompose()
+        except Exception:
+            pass
+
+    # Keyword sweep — catches dynamically-named widgets
+    for el in list(soup.find_all(True)):
+        if not isinstance(el, Tag):
+            continue
+        combined = (
+            " ".join(el.get("class") or []) + " " + str(el.get("id") or "")
+        ).lower()
+        if any(kw in combined for kw in _CONSENT_WIDGET_KEYWORDS):
+            el.decompose()
+
+
+def _preprocess_html(html: str) -> str:
+    """Strip cookie-consent overlays and template placeholders from *html*.
+
+    Also removes ``<template>`` elements: HTML5 templates hold pre-render
+    placeholder content that is never visible to users, but readability-lxml
+    can mistakenly extract it as the "main content" (e.g. WPConsent modals).
+
+    Note: lxml re-parents ``<template>`` children into the document body, so
+    BS4 ``decompose()`` on the tag leaf does not remove the children.  We
+    therefore strip ``<template>`` blocks with a regex pass *before* parsing.
+    """
+    # Regex pass first — removes <template>…</template> including all content.
+    # Must happen before BS4/lxml parsing because lxml moves template children
+    # into the document body, making decompose() ineffective on the container.
+    try:
+        html = re.sub(
+            r"<template\b[^>]*>.*?</template>",
+            "",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    except Exception:
+        pass
+
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        _strip_cookie_consent(soup)
+        return str(soup)
+    except Exception as exc:
+        logger.debug("HTML pre-processing failed: %s", exc)
+        return html
 
 
 class ExtractionResult(NamedTuple):
@@ -209,7 +301,18 @@ def dom_heuristic_extract(html: str) -> str:
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
-        return str(candidates[0][1])
+        top_el = candidates[0][1]
+
+        # If one element is clearly dominant (holds ≥ 55 % of remaining body
+        # words), return just that element.  Otherwise the content is spread
+        # across many equal-weight sections (service pages, wikis, portals) —
+        # return the full stripped body so nothing is left behind.
+        body = soup.find("body")
+        body_wc = len((body or soup).get_text(separator=" ").split()) if body else 0
+        top_wc = len(top_el.get_text(separator=" ").split())
+        if body_wc == 0 or top_wc / body_wc >= 0.55:
+            return str(top_el)
+        return str(body) if body else str(top_el)
 
     # Step 3: Full body fallback
     body = soup.find("body")
@@ -221,28 +324,53 @@ def dom_heuristic_extract(html: str) -> str:
 # ---------------------------------------------------------------------------
 
 def extract_main_content(html: str, url: str = "") -> ExtractionResult:
-    """Extract the main content from *html* using a three-tier cascade.
+    """Extract the main content from *html* using a best-of-two + heuristic cascade.
+
+    Strategy:
+      1. Run readability-lxml AND trafilatura independently.
+      2. If trafilatura returns ≥ 1.4× more words than readability, prefer it —
+         this handles multi-section service/portal pages where readability
+         fixates on one content block and discards the rest.
+      3. Use whichever of readability/trafilatura met its minimum threshold.
+      4. Fall back to DOM heuristic (returns full body when no element
+         dominates, preserving equal-weight sections).
 
     Returns an ExtractionResult namedtuple:
-        html     – extracted HTML fragment (may contain nested tags)
-        method   – "readability" | "trafilatura" | "dom_heuristic"
+        html       – extracted HTML fragment
+        method     – "readability" | "trafilatura" | "dom_heuristic"
         word_count – approximate word count of extracted text
     """
-    # Tier 1: readability-lxml
-    content = _try_readability(html, url)
-    if content:
-        wc = _count_words(content)
-        logger.debug("readability extracted %d words from %s", wc, url)
-        return ExtractionResult(html=content, method="readability", word_count=wc)
+    # Pre-process: strip cookie-consent / GDPR overlays before any extractor
+    html = _preprocess_html(html)
 
-    # Tier 2: trafilatura
-    content = _try_trafilatura(html, url)
-    if content:
-        wc = _count_words(content)
-        logger.debug("trafilatura extracted %d words from %s", wc, url)
-        return ExtractionResult(html=content, method="trafilatura", word_count=wc)
+    # Run both Tier-1 and Tier-2 extractors so we can compare their output.
+    r_content = _try_readability(html, url)
+    r_wc = _count_words(r_content) if r_content else 0
 
-    # Tier 3: DOM heuristic
+    t_content = _try_trafilatura(html, url)
+    t_wc = _count_words(t_content) if t_content else 0
+
+    logger.debug(
+        "readability=%d words  trafilatura=%d words  url=%s", r_wc, t_wc, url
+    )
+
+    # Both extractors produced usable content — pick the richer one.
+    if r_wc >= _READABILITY_MIN_WORDS and t_wc >= _TRAFILATURA_MIN_WORDS:
+        # Trafilatura gets the nod when it yields ≥ 40 % more words.
+        # Threshold of 1.4× avoids switching on minor noise differences.
+        if t_wc >= r_wc * 1.4:
+            logger.debug("trafilatura wins (%d vs %d words) for %s", t_wc, r_wc, url)
+            return ExtractionResult(html=t_content, method="trafilatura", word_count=t_wc)  # type: ignore[arg-type]
+        logger.debug("readability wins (%d vs %d words) for %s", r_wc, t_wc, url)
+        return ExtractionResult(html=r_content, method="readability", word_count=r_wc)  # type: ignore[arg-type]
+
+    # Only one extractor succeeded.
+    if r_wc >= _READABILITY_MIN_WORDS:
+        return ExtractionResult(html=r_content, method="readability", word_count=r_wc)  # type: ignore[arg-type]
+    if t_wc >= _TRAFILATURA_MIN_WORDS:
+        return ExtractionResult(html=t_content, method="trafilatura", word_count=t_wc)  # type: ignore[arg-type]
+
+    # Tier 3: DOM heuristic (handles pages both extractors can't parse)
     content = dom_heuristic_extract(html)
     wc = _count_words(content)
     logger.debug("dom_heuristic extracted %d words from %s", wc, url)

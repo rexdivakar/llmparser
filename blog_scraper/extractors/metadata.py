@@ -31,7 +31,11 @@ def _safe_str(val: Any, default: str = "") -> str:
 
 
 def _parse_date(raw: str | None) -> str | None:
-    """Parse a date string to ISO 8601.  Returns None on failure."""
+    """Parse a date string to ISO 8601.
+
+    Returns None on failure or when the year falls outside 1990-2099
+    (catches epoch defaults like 1970-01-01 and far-future typos).
+    """
     if not raw:
         return None
     raw = _ISO_CLEANUP_RE.sub(" ", raw.strip())
@@ -45,6 +49,8 @@ def _parse_date(raw: str | None) -> str | None:
             },
         )
         if parsed:
+            if not (1990 <= parsed.year <= 2099):
+                return None
             return parsed.isoformat()
     except Exception:
         pass
@@ -279,17 +285,28 @@ def _extract_time_datetime(soup: BeautifulSoup) -> str | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_metadata(html: str, page_url: str = "") -> dict:
+def extract_metadata(
+    html: str,
+    page_url: str = "",
+    soup: BeautifulSoup | None = None,
+) -> dict:
     """Extract all available metadata from *html*.
+
+    Args:
+        html:     Raw HTML string.
+        page_url: Page URL used for canonical resolution and relative links.
+        soup:     Pre-parsed BeautifulSoup object.  When provided the HTML is
+                  not re-parsed, saving one parse per article.
 
     Returns a dict with keys:
         title, author, published_at, updated_at, site_name, language,
         summary, tags, canonical_url, images, raw_metadata
     """
-    try:
-        soup = BeautifulSoup(html, "lxml")
-    except Exception:
-        return _empty_metadata()
+    if soup is None:
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            return _empty_metadata()
 
     jsonld = _extract_jsonld(soup)
     og, twitter = _extract_og_twitter(soup)

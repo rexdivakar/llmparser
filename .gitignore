@@ -13,3 +13,6 @@ __pycache__
 .DS_Store
 .vscode
 *.iml
+blog_scraper/extractors/__pycache__/*
+*pyc
+blog_scraper/__pycache__/__init__.cpython-313.pyc

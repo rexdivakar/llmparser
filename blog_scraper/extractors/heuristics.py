@@ -126,13 +126,20 @@ class Heuristics:
     # Article scoring
     # ------------------------------------------------------------------
 
-    def article_score(self, url: str, html: str) -> int:
+    def article_score(
+        self,
+        url: str,
+        html: str,
+        soup: BeautifulSoup | None = None,
+    ) -> int:
         """Return an integer score 0-100+ indicating how likely *url/html*
         is a single article page.  Threshold: ARTICLE_SCORE_THRESHOLD.
+
+        Pass a pre-parsed *soup* to avoid re-parsing the HTML.
         """
         score = 0
         score += self._url_score(url)
-        score += self._content_score(html)
+        score += self._content_score(html, soup=soup)
         return score
 
     def _url_score(self, url: str) -> int:
@@ -176,13 +183,17 @@ class Heuristics:
 
         return score
 
-    def _content_score(self, html: str) -> int:
-        """Score based on parsed HTML content."""
+    def _content_score(self, html: str, soup: BeautifulSoup | None = None) -> int:
+        """Score based on parsed HTML content.
+
+        Pass a pre-parsed *soup* to skip re-parsing.
+        """
         score = 0
-        try:
-            soup = BeautifulSoup(html, "lxml")
-        except Exception:
-            return 0
+        if soup is None:
+            try:
+                soup = BeautifulSoup(html, "lxml")
+            except Exception:
+                return 0
 
         # Remove noise elements for word counting
         for tag in ("nav", "header", "footer", "aside", "script", "style", "noscript"):

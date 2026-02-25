@@ -45,7 +45,33 @@ def _build_parser() -> argparse.ArgumentParser:
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         metavar="{DEBUG,INFO,WARNING,ERROR}",
                         help="Logging level (default: INFO)")
+    # --- new flags ---
+    parser.add_argument("--cache", action="store_true", default=False,
+                        help="Enable HTTP response cache for faster re-runs (default: off)")
+    parser.add_argument("--resume", action="store_true", default=False,
+                        help="Resume a previous crawl: skip URLs already in seen_urls.txt")
+    parser.add_argument("--allow-subdomains", action="store_true", default=False,
+                        help="Crawl subdomains of the start URL's domain (e.g. docs.example.com)")
+    parser.add_argument("--extra-domains", default=None, metavar="DOMAINS",
+                        help="Comma-separated extra domains to crawl (e.g. 'blog.example.com,news.example.com')")
+    parser.add_argument("--progress", action="store_true", default=False,
+                        help="Show a live Rich progress bar (sets log-level to WARNING)")
     return parser
+
+
+def _validate_regex_args(args: argparse.Namespace) -> str | None:
+    """Return an error message if any regex flags are invalid, else None."""
+    import re as _re
+    for flag, pattern in [
+        ("--include-regex", args.include_regex),
+        ("--exclude-regex", args.exclude_regex),
+    ]:
+        if pattern:
+            try:
+                _re.compile(pattern)
+            except _re.error as exc:
+                return f"Invalid {flag} pattern {pattern!r}: {exc}"
+    return None
 
 
 def _check_playwright_available() -> bool:
@@ -99,13 +125,17 @@ def _print_banner(args: argparse.Namespace) -> None:
         console.print(
             Panel.fit(
                 f"[bold cyan]Blog Scraper[/bold cyan]\n"
-                f"URL:         [green]{args.url}[/green]\n"
-                f"Output:      [yellow]{args.out}[/yellow]\n"
-                f"Max pages:   {args.max_pages}\n"
-                f"Max depth:   {args.max_depth}\n"
-                f"Concurrency: {args.concurrency}\n"
-                f"Render JS:   {args.render_js}\n"
-                f"Robots.txt:  {'ignore' if args.ignore_robots else 'obey'}",
+                f"URL:            [green]{args.url}[/green]\n"
+                f"Output:         [yellow]{args.out}[/yellow]\n"
+                f"Max pages:      {args.max_pages}\n"
+                f"Max depth:      {args.max_depth}\n"
+                f"Concurrency:    {args.concurrency}\n"
+                f"Render JS:      {args.render_js}\n"
+                f"Robots.txt:     {'ignore' if args.ignore_robots else 'obey'}\n"
+                f"HTTP cache:     {'on' if args.cache else 'off'}\n"
+                f"Resume:         {'yes' if args.resume else 'no'}\n"
+                f"Subdomains:     {'allow' if args.allow_subdomains else 'block'}\n"
+                f"Extra domains:  {args.extra_domains or '—'}",
                 border_style="cyan",
                 title="[bold]Configuration[/bold]",
             )
@@ -118,13 +148,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # --- #8 Validate regex flags early, before any heavy imports ---
+    regex_err = _validate_regex_args(args)
+    if regex_err:
+        print(f"ERROR: {regex_err}", file=sys.stderr)
+        return 1
+
     _print_banner(args)
 
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # --progress silences Scrapy's chatty output so the bar is readable
+    effective_log_level = "WARNING" if args.progress else args.log_level
     logging.basicConfig(
-        level=getattr(logging, args.log_level, logging.INFO),
+        level=getattr(logging, effective_log_level, logging.INFO),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
 
@@ -139,11 +177,24 @@ def main(argv: list[str] | None = None) -> int:
     scrapy_settings = Settings()
     scrapy_settings.setmodule(settings_module, priority="project")
 
-    # CLI overrides
+    # Core CLI overrides
     scrapy_settings.set("CONCURRENT_REQUESTS", args.concurrency, priority="cmdline")
-    scrapy_settings.set("LOG_LEVEL", args.log_level, priority="cmdline")
+    scrapy_settings.set("LOG_LEVEL", effective_log_level, priority="cmdline")
     scrapy_settings.set("ROBOTSTXT_OBEY", not args.ignore_robots, priority="cmdline")
     scrapy_settings.set("OUTPUT_DIR", str(out_dir), priority="cmdline")
+    scrapy_settings.set("SPIDER_MAX_PAGES", args.max_pages, priority="cmdline")
+
+    # --- #7 HTTP cache ---
+    if args.cache:
+        scrapy_settings.set("HTTPCACHE_ENABLED", True, priority="cmdline")
+        scrapy_settings.set(
+            "HTTPCACHE_DIR", str(out_dir / ".httpcache"), priority="cmdline"
+        )
+        logging.info("HTTP cache enabled → %s", out_dir / ".httpcache")
+
+    # --- #6 Live progress bar ---
+    if args.progress:
+        scrapy_settings.set("PROGRESS_ENABLED", True, priority="cmdline")
 
     # Conditionally enable Playwright
     playwright_enabled = False
@@ -175,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
             include_regex=args.include_regex,
             exclude_regex=args.exclude_regex,
             out_dir=str(out_dir),
+            # --- new spider args ---
+            allow_subdomains=args.allow_subdomains,      # #3
+            extra_domains=args.extra_domains,             # #3
+            resume=args.resume,                           # #2
         )
         process.start()
     except Exception as exc:

@@ -79,10 +79,25 @@ DOWNLOADER_MIDDLEWARES: dict[str, int | None] = {
 # Item pipelines
 # ---------------------------------------------------------------------------
 ITEM_PIPELINES: dict[str, int] = {
+    # 150: drop exact-duplicate content before validation
+    "blog_scraper.pipelines.ContentHashDedupPipeline": 150,
     "blog_scraper.pipelines.ArticleValidationPipeline": 200,
     "blog_scraper.pipelines.ArticleWriterPipeline": 300,
     "blog_scraper.pipelines.IndexWriterPipeline": 400,
 }
+
+# ---------------------------------------------------------------------------
+# Scrapy extensions
+# ---------------------------------------------------------------------------
+EXTENSIONS: dict[str, int] = {
+    "blog_scraper.extensions.RichProgressExtension": 500,
+}
+
+# ---------------------------------------------------------------------------
+# Progress bar (toggled by --progress CLI flag)
+# ---------------------------------------------------------------------------
+PROGRESS_ENABLED = False
+SPIDER_MAX_PAGES = 500  # kept in sync with --max-pages via __main__.py
 
 # ---------------------------------------------------------------------------
 # Output directory (override via CLI --out or spider argument)
