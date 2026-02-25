@@ -31,6 +31,47 @@ LLMParser solves this:
 
 ---
 
+## LLMParser vs Firecrawl
+
+The two tools solve different problems at different levels.
+
+| | LLMParser | Firecrawl |
+|---|---|---|
+| **Type** | Local Python package | Cloud API service |
+| **Cost** | Free (you run it) | Paid (per page/crawl) |
+| **Privacy** | Data never leaves your machine | Pages sent to Firecrawl servers |
+| **Rate limits** | None — your own infra | Plan-based (capped free tier) |
+| **LLM used** | No — fully deterministic | Yes — LLM extraction mode |
+| **Open source** | Yes, fully | Partial (SDK open, core closed) |
+| **Full site crawl** | Built-in (BFS + sitemap + pagination) | Premium feature |
+| **RSS/feed support** | Yes — `fetch_feed()` native | No |
+| **Typed content blocks** | Yes — `heading / paragraph / code / list / quote / table` | No — raw Markdown only |
+| **Article scoring** | Yes — discards nav/tag/pagination pages automatically | No |
+| **Offline / air-gapped** | Yes | No |
+
+### Where Firecrawl wins
+- Zero setup — one API call, no Playwright install
+- LLM-powered schema extraction — define a JSON schema, AI fills it from any page
+- Managed anti-bot bypass — residential proxies, fingerprint spoofing
+- Actions API — click, scroll, fill forms before scraping
+
+### Where LLMParser wins
+- **Free at any scale** — 100,000 pages costs $0 vs a paid Firecrawl plan
+- **Deterministic** — same input always gives same output; no hallucination risk in extraction
+- **Richer structure** — typed blocks, unified metadata, ISO 8601 dates, article scoring
+- **Full crawl pipeline** — BFS + sitemap + pagination + resume + dedup out of the box
+- **Data ownership** — nothing leaves your machine; works in air-gapped environments
+
+### In one sentence
+
+> Firecrawl is a managed scraping API with LLM extraction. LLMParser is a self-hosted crawl engine that produces richer structured output at zero marginal cost — but you own the infrastructure.
+
+**Use Firecrawl** for one-off scraping, heavy anti-bot sites, or LLM-powered field extraction from a handful of URLs.
+
+**Use LLMParser** when cost at scale matters, data privacy is required, or you need a full site ingestion pipeline for RAG.
+
+---
+
 ## What Makes It Different
 
 ### Adaptive Engine — Reads Any Site, Dynamically
