@@ -42,6 +42,7 @@ import zlib
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
+from llmparser.extractors.block_detection import detect_block
 from llmparser.extractors.blocks import html_to_blocks
 from llmparser.extractors.feed import parse_feed
 from llmparser.extractors.heuristics import Heuristics
@@ -53,6 +54,7 @@ from llmparser.extractors.main_content import (
 from llmparser.extractors.markdown import html_to_markdown
 from llmparser.extractors.metadata import extract_metadata
 from llmparser.items import ArticleSchema
+from llmparser.proxy import ProxyConfig, ProxyRotator
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,7 @@ def fetch_html(
     timeout: int = 30,
     user_agent: str | None = None,
     max_retries: int = 3,
+    proxy: str | None = None,
 ) -> str:
     """Fetch *url* and return the response body as a decoded string.
 
@@ -107,6 +110,8 @@ def fetch_html(
         timeout:     Request timeout in seconds (default 30).
         user_agent:  Override the default browser User-Agent string.
         max_retries: Maximum number of retry attempts (default 3).
+        proxy:       Optional proxy URL (e.g. ``"http://host:port"`` or
+                     ``"http://user:pass@host:port"``).
 
     Returns:
         Response body decoded to ``str``.
@@ -140,10 +145,16 @@ def fetch_html(
         },
     )
 
+    if proxy:
+        proxy_handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        _open = urllib.request.build_opener(proxy_handler).open
+    else:
+        _open = urllib.request.urlopen
+
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _open(req, timeout=timeout) as resp:
                 raw: bytes = resp.read()
                 # urllib does NOT auto-decompress Content-Encoding — do it manually
                 encoding = resp.headers.get("Content-Encoding", "").lower().strip()
@@ -231,8 +242,14 @@ def fetch_html(
     raise last_exc or FetchError(f"All retries exhausted for {url}", url=url)
 
 
-def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
-    """Fetch *url* via a headless Chromium browser (requires playwright)."""
+def _fetch_html_playwright(url: str, timeout: int = 30, proxy: str | None = None) -> str:
+    """Fetch *url* via a headless Chromium browser (requires playwright).
+
+    Args:
+        url:     Fully-qualified HTTP/HTTPS URL.
+        timeout: Request timeout in seconds (Playwright gets max(timeout, 60)).
+        proxy:   Optional proxy URL forwarded to Playwright's browser context.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -254,13 +271,21 @@ def _fetch_html_playwright(url: str, timeout: int = 30) -> str:
                 ],
             )
             try:
-                ctx = browser.new_context(
-                    user_agent=_DEFAULT_UA,
-                    java_script_enabled=True,
-                    viewport={"width": 1920, "height": 1080},
-                    # Accept all cookies so cookie-consent walls auto-dismiss
-                    extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                )
+                if proxy:
+                    ctx = browser.new_context(
+                        user_agent=_DEFAULT_UA,
+                        java_script_enabled=True,
+                        viewport={"width": 1920, "height": 1080},
+                        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                        proxy={"server": proxy},
+                    )
+                else:
+                    ctx = browser.new_context(
+                        user_agent=_DEFAULT_UA,
+                        java_script_enabled=True,
+                        viewport={"width": 1920, "height": 1080},
+                        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                    )
                 page = ctx.new_page()
                 effective_timeout = max(timeout, 60) * 1_000
 
@@ -467,6 +492,9 @@ def extract(
         except Exception as exc:
             logger.debug("Title fallback parse failed: %s", exc)
 
+    article_score = _heuristics.article_score(url, html)
+    block = detect_block(html, url=url)
+
     return ArticleSchema(
         url=url,
         canonical_url=meta.get("canonical_url") or url or None,
@@ -486,11 +514,16 @@ def extract(
         word_count=word_count,
         reading_time_minutes=_heuristics.reading_time(word_count),
         extraction_method_used=result.method,
-        article_score=_heuristics.article_score(url, html),
+        article_score=article_score,
         scraped_at=datetime.now(UTC).isoformat(),
         raw_metadata=meta.get("raw_metadata") or {},
         fetch_strategy=fetch_strategy,
         page_type=page_type,
+        is_blocked=block.is_blocked,
+        block_type=block.block_type,
+        block_reason=block.block_reason,
+        confidence_score=min(1.0, article_score / 80.0),
+        is_empty=word_count < 20,
     )
 
 
@@ -504,6 +537,8 @@ def fetch(
     render_js: bool = False,
     timeout: int = 30,
     user_agent: str | None = None,
+    proxy_list: list[str] | None = None,
+    retry_on_block: bool = True,
 ) -> ArticleSchema:
     """Fetch *url* and return a fully-extracted :class:`~llmparser.items.ArticleSchema`.
 
@@ -512,13 +547,18 @@ def fetch(
     heuristic, markdown conversion, block parsing).
 
     Args:
-        url:        Fully-qualified HTTP/HTTPS URL to scrape.
-        render_js:  If ``True``, render the page with a headless Chromium
-                    browser via Playwright before extraction.  Requires
-                    ``playwright install chromium``.
-        timeout:    Network timeout in seconds (default 30).
-        user_agent: Custom User-Agent string.  Defaults to a realistic
-                    Chrome browser UA.
+        url:            Fully-qualified HTTP/HTTPS URL to scrape.
+        render_js:      If ``True``, render the page with a headless Chromium
+                        browser via Playwright before extraction.  Requires
+                        ``playwright install chromium``.
+        timeout:        Network timeout in seconds (default 30).
+        user_agent:     Custom User-Agent string.  Defaults to a realistic
+                        Chrome browser UA.
+        proxy_list:     Optional list of proxy URLs to rotate through.  When a
+                        block is detected and *retry_on_block* is ``True``,
+                        the next proxy is selected and the request is retried.
+        retry_on_block: If ``True`` (default), retry with a new proxy when a
+                        block is detected.  Requires *proxy_list* to be set.
 
     Returns:
         :class:`~llmparser.items.ArticleSchema` instance.  Access fields
@@ -542,33 +582,83 @@ def fetch(
     """
     logger.info("fetch: %s (render_js=%s)", url, render_js)
 
-    if render_js:
-        # Caller explicitly requested Playwright — skip auto-detection
-        html = _fetch_html_playwright(url, timeout=timeout)
-        return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
-
-    # Adaptive engine: classify page type and select the best strategy
     from llmparser.extractors.adaptive import adaptive_fetch_html
 
-    result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent)
-    article = extract(
-        result.html,
-        url=url,
-        fetch_strategy=result.strategy_used,
-        page_type=result.classification.page_type.value,
-    )
-    # Embed classification signals in raw_metadata so callers (e.g. evaluate.py)
-    # can display analysis without making a second HTTP request.
-    sig = result.classification.signals
-    article.raw_metadata["_classification"] = {
-        "reason":        result.classification.reason,
-        "confidence":    result.classification.confidence,
-        "frameworks":    sig.frameworks_detected,
-        "amp_url":       sig.amp_url,
-        "feed_url":      sig.feed_url,
-        "body_word_count": sig.body_word_count,
-    }
+    rotator: ProxyRotator | None = None
+    if proxy_list:
+        rotator = ProxyRotator(ProxyConfig(proxies=proxy_list))
+
+    max_block_retries = min(5, len(proxy_list)) if proxy_list else 0
+
+    def _do_fetch(proxy: str | None) -> ArticleSchema:
+        if render_js:
+            html = _fetch_html_playwright(url, timeout=timeout, proxy=proxy)
+            return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
+        result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent, proxy=proxy)
+        article = extract(
+            result.html,
+            url=url,
+            fetch_strategy=result.strategy_used,
+            page_type=result.classification.page_type.value,
+        )
+        sig = result.classification.signals
+        article.raw_metadata["_classification"] = {
+            "reason":          result.classification.reason,
+            "confidence":      result.classification.confidence,
+            "frameworks":      sig.frameworks_detected,
+            "amp_url":         sig.amp_url,
+            "feed_url":        sig.feed_url,
+            "body_word_count": sig.body_word_count,
+        }
+        return article
+
+    current_proxy = rotator.get_proxy() if rotator else None
+    article = _do_fetch(current_proxy)
+
+    if retry_on_block and rotator and article.is_blocked:
+        for attempt in range(max_block_retries):
+            if current_proxy is not None:
+                rotator.mark_failed(current_proxy)
+            current_proxy = rotator.rotate()
+            if current_proxy is None or not rotator.has_proxies():
+                logger.warning(
+                    "fetch: all proxies exhausted after block for %s (block_type=%s)",
+                    url, article.block_type,
+                )
+                break
+            logger.info(
+                "fetch: block detected (%s) for %s — retrying with proxy %s (attempt %d/%d)",
+                article.block_type, url, current_proxy, attempt + 1, max_block_retries,
+            )
+            article = _do_fetch(current_proxy)
+            if not article.is_blocked:
+                logger.info("fetch: block resolved with proxy %s for %s", current_proxy, url)
+                break
+
     return article
+
+
+def parse(html: str, url: str = "") -> ArticleSchema:
+    """Parse pre-fetched HTML with no network requests.
+
+    Args:
+        html: Raw HTML string to extract content from.
+        url:  Original URL of the page (used for link/image resolution and
+              extraction hints).  Empty string if unknown.
+
+    Returns:
+        :class:`~llmparser.items.ArticleSchema` with all available fields
+        populated.  Block detection is run on the supplied HTML.
+
+    Example::
+
+        from llmparser import parse
+
+        article = parse('<html><body>Just a moment...</body></html>',
+                        url="https://example.com")
+        print(article.is_blocked, article.block_type)
+    """
+    return extract(html, url=url, fetch_strategy="pre_fetched", page_type=None)
 
 
 # ---------------------------------------------------------------------------

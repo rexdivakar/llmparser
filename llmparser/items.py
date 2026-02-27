@@ -128,6 +128,16 @@ class ArticleSchema(BaseModel):
     fetch_strategy: str | None = None   # which strategy produced the HTML
     page_type: str | None = None        # classified page type
 
+    # Block detection
+    is_blocked: bool = False
+    # "captcha"|"cloudflare"|"datadome"|"perimeterx"|"akamai"|"ip_ban"|"soft_block"|"empty"
+    block_type: str | None = None
+    block_reason: str | None = None
+
+    # Quality signals
+    confidence_score: float = 0.0   # normalized 0.0-1.0 from article_score (/ 80.0, capped)
+    is_empty: bool = False          # True when word_count < 20
+
     @field_validator("url", "canonical_url", mode="before")
     @classmethod
     def strip_url(cls, v: Any) -> Any:

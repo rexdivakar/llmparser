@@ -28,24 +28,31 @@ Plugin extension points::
     register_scorer(BoostPython())
 """
 
+from llmparser.extractors.block_detection import BlockResult
+from llmparser.parser import LLMParser
 from llmparser.plugins import (
     register_extractor,
     register_formatter,
     register_scorer,
     register_strategy,
 )
-from llmparser.query import FetchError, extract, fetch, fetch_batch, fetch_feed, fetch_html
+from llmparser.proxy import ProxyConfig
+from llmparser.query import FetchError, extract, fetch, fetch_batch, fetch_feed, fetch_html, parse
 from llmparser.rag import ArticleChunk, to_jsonl
 
 __version__ = "0.1.0"
 __all__ = [
     "ArticleChunk",
+    "BlockResult",
     "FetchError",
+    "LLMParser",
+    "ProxyConfig",
     "extract",
     "fetch",
     "fetch_batch",
     "fetch_feed",
     "fetch_html",
+    "parse",
     "register_extractor",
     "register_formatter",
     "register_scorer",

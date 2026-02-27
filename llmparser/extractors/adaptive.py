@@ -414,6 +414,7 @@ def adaptive_fetch_html(
     *,
     timeout: int = 30,
     user_agent: str | None = None,
+    proxy: str | None = None,
 ) -> FetchResult:
     """Fetch *url* using the best available strategy.
 
@@ -424,6 +425,8 @@ def adaptive_fetch_html(
         url:        Fully-qualified HTTP/HTTPS URL.
         timeout:    Per-request timeout in seconds (Playwright gets max(timeout,60)).
         user_agent: Override the default browser User-Agent string.
+        proxy:      Optional proxy URL forwarded to every fetch attempt in the
+                    strategy chain (e.g. ``"http://host:port"``).
 
     Returns:
         :class:`FetchResult` with html, classification, and strategy_used.
@@ -435,7 +438,7 @@ def adaptive_fetch_html(
     from llmparser.query import fetch_html as _static
 
     # ── Step 1: Static fetch (always first) ──────────────────────────────────
-    html = _static(url, timeout=timeout, user_agent=user_agent)
+    html = _static(url, timeout=timeout, user_agent=user_agent, proxy=proxy)
     classification = classify_page(html, url)
     strategy = classification.recommended_strategy
 
@@ -462,6 +465,7 @@ def adaptive_fetch_html(
                 classification.signals.amp_url,
                 timeout=timeout,
                 user_agent=user_agent,
+                proxy=proxy,
             )
             if _raw_word_count(amp_html) > classification.signals.body_word_count:
                 logger.info("AMP strategy succeeded for %s", url)
@@ -476,7 +480,7 @@ def adaptive_fetch_html(
     # ── Step 3: Mobile User-Agent ─────────────────────────────────────────────
     if strategy == "mobile_ua":
         try:
-            mob_html = _static(url, timeout=timeout, user_agent=_MOBILE_UA)
+            mob_html = _static(url, timeout=timeout, user_agent=_MOBILE_UA, proxy=proxy)
             if _raw_word_count(mob_html) > classification.signals.body_word_count * 1.3:
                 logger.info("Mobile-UA strategy succeeded for %s", url)
                 return FetchResult(
@@ -489,7 +493,7 @@ def adaptive_fetch_html(
 
     # ── Step 4: Playwright (JS render) ───────────────────────────────────────
     if strategy == "playwright":
-        pw_html = _try_playwright(url, timeout=timeout)
+        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy)
         if pw_html and _raw_word_count(pw_html) > classification.signals.body_word_count:
             logger.info("Playwright strategy succeeded for %s", url)
             return FetchResult(
@@ -503,7 +507,7 @@ def adaptive_fetch_html(
         strategy != "playwright"
         and classification.signals.body_word_count < _MIN_CONTENT_WORDS
     ):
-        pw_html = _try_playwright(url, timeout=timeout)
+        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy)
         if pw_html and _raw_word_count(pw_html) > classification.signals.body_word_count:
             logger.info("Playwright fallback succeeded for %s", url)
             return FetchResult(
@@ -548,11 +552,11 @@ def adaptive_fetch_html(
     )
 
 
-def _try_playwright(url: str, timeout: int = 30) -> str | None:
+def _try_playwright(url: str, timeout: int = 30, proxy: str | None = None) -> str | None:
     """Attempt a Playwright fetch; return HTML string or None on any failure."""
     try:
         from llmparser.query import _fetch_html_playwright
-        return _fetch_html_playwright(url, timeout=max(timeout, 60))
+        return _fetch_html_playwright(url, timeout=max(timeout, 60), proxy=proxy)
     except ImportError:
         if not _playwright_warned["value"]:
             logger.warning(
