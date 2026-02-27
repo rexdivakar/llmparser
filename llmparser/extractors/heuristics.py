@@ -184,7 +184,15 @@ class Heuristics:
             score += 5
         elif content_segments == 2:
             score += 3  # /year/slug or /category/post is fine
-        elif content_segments <= 1:
+        elif content_segments == 1:
+            # Many news sites use a flat URL structure: domain.com/long-article-slug
+            # A slug longer than 25 chars is almost certainly an article, not a page.
+            slug_len = len(segments[0])
+            if slug_len > 25:
+                score += 3
+            else:
+                score -= 10
+        else:  # content_segments == 0 — root URL
             score -= 20
 
         # Paginated

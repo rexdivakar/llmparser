@@ -25,7 +25,7 @@ from urllib.parse import urljoin, urlparse
 import defusedxml.ElementTree as defused_ET
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
 import scrapy
 from bs4 import BeautifulSoup
@@ -156,6 +156,14 @@ class BlogSpider(scrapy.Spider):
 
         self._heuristics = Heuristics()
 
+        # Clear stale skipped.jsonl from previous runs (unless resuming).
+        if not resume:
+            skipped_path = Path(out_dir) / "skipped.jsonl"
+            try:
+                skipped_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Could not clear skipped.jsonl: %s", exc)
+
     def _load_seen_urls(self) -> set[str]:
         """Load seen URLs from disk for resume (#2). Returns empty set if not resuming."""
         if not self._seen_urls_path:
@@ -207,10 +215,10 @@ class BlogSpider(scrapy.Spider):
                 logger.warning("Could not write to seen_urls.txt: %s", exc)
 
     # ------------------------------------------------------------------
-    # Start requests
+    # Start requests  (Scrapy 2.13+: async generator replaces start_requests)
     # ------------------------------------------------------------------
 
-    def start_requests(self) -> Iterator[Request]:
+    async def start(self) -> AsyncIterator[Request]:  # type: ignore[override]
         # Attempt sitemap discovery first
         parsed = urlparse(self.start_url)
         base = f"{parsed.scheme}://{parsed.netloc}"

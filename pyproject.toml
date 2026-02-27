@@ -139,13 +139,14 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # evaluate.py is a standalone dev script; top-level imports would break --help
-"evaluate.py" = ["E402", "T201", "PLC0415"]
+"evaluate.py" = ["E402", "T201", "PLC0415", "TC001"]
 # __main__.py is the CLI entry point; print() is correct for user-facing output
 "llmparser/__main__.py" = ["T201"]
 # test helper imports inside methods are part of testing import behaviour
 "tests/*" = ["TRY", "S101"]
 # settings.py uses bullet-list comments to document conditional Playwright setup
-"llmparser/settings.py" = ["ERA001"]
+# and a late `import logging` for third-party logger suppression
+"llmparser/settings.py" = ["ERA001", "E402", "I001"]
 
 [tool.pyright]
 pythonVersion = "3.11"

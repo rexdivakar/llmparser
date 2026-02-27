@@ -172,10 +172,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # --progress silences Scrapy's chatty output so the bar is readable
     effective_log_level = "WARNING" if args.progress else args.log_level
-    logging.basicConfig(
-        level=getattr(logging, effective_log_level, logging.INFO),
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    # NOTE: do NOT call logging.basicConfig() here — CrawlerProcess installs
+    # Scrapy's own handler on the root logger.  A second basicConfig() call
+    # would add a duplicate StreamHandler, printing every line twice.
 
     try:
         from scrapy.settings import Settings

@@ -135,6 +135,11 @@ PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 30_000  # ms
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 
+# Suppress noisy third-party loggers that produce expected non-error messages
+import logging as _logging
+_logging.getLogger("readability.readability").setLevel(_logging.WARNING)
+_logging.getLogger("readability").setLevel(_logging.WARNING)
+
 # ---------------------------------------------------------------------------
 # Request fingerprinting
 # ---------------------------------------------------------------------------
