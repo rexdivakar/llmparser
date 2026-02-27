@@ -55,7 +55,7 @@ HTTPCACHE_IGNORE_HTTP_CODES = [500, 502, 503, 504, 408, 429]
 # User-agent
 # ---------------------------------------------------------------------------
 # Overridden per-request by RotatingUserAgentMiddleware
-USER_AGENT = "LLMParser/0.2 (+https://github.com/user/llmparser)"
+USER_AGENT = "LLMParser/0.1.0 (+https://github.com/rexdivakar/llmparser)"
 
 # ---------------------------------------------------------------------------
 # Feeds (unused - we write output ourselves in pipelines)

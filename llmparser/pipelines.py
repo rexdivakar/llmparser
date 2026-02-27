@@ -1,7 +1,7 @@
 """Scrapy item pipelines: dedup → validation → article writer → index writer.
 
-Scrapy 2.14+ compatible: open_spider, close_spider, and process_item do NOT
-take a `spider` argument.  Spider identity is not needed at runtime.
+Compatible with Scrapy 2.11+ where spider arguments are still passed to
+open_spider/close_spider/process_item, and 2.13+ where they are optional.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ class ContentHashDedupPipeline:
     def __init__(self) -> None:
         self._seen: set[str] = set()
 
-    def process_item(self, item: Any) -> Any:
+    def process_item(self, item: Any, spider: object | None = None) -> Any:
         if not isinstance(item, ArticleItem):
             return item
 
@@ -115,17 +115,17 @@ class ArticleValidationPipeline:
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(skipped_log_path=out_dir / "skipped.jsonl")
 
-    def open_spider(self) -> None:
+    def open_spider(self, spider: object | None = None) -> None:
         self.skipped_log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = self.skipped_log_path.open("a", encoding="utf-8")
         logger.info("ArticleValidationPipeline open; skipped log: %s", self.skipped_log_path)
 
-    def close_spider(self) -> None:
+    def close_spider(self, spider: object | None = None) -> None:
         if self._log_handle:
             self._log_handle.close()
         logger.info("ArticleValidationPipeline closed")
 
-    def process_item(self, item: Any) -> Any:
+    def process_item(self, item: Any, spider: object | None = None) -> Any:
         if not isinstance(item, ArticleItem):
             return item
 
@@ -185,11 +185,11 @@ class ArticleWriterPipeline:
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(articles_dir=out_dir / "articles")
 
-    def open_spider(self) -> None:
+    def open_spider(self, spider: object | None = None) -> None:
         self.articles_dir.mkdir(parents=True, exist_ok=True)
         logger.info("ArticleWriterPipeline open → %s", self.articles_dir)
 
-    def process_item(self, item: Any) -> Any:
+    def process_item(self, item: Any, spider: object | None = None) -> Any:
         if not isinstance(item, ArticleItem):
             return item
         logger.debug("Writing article: %s", item.get("url", ""))
@@ -242,7 +242,7 @@ class ArticleWriterPipeline:
         item["_slug"] = slug
         return item
 
-    def close_spider(self) -> None:
+    def close_spider(self, spider: object | None = None) -> None:
         logger.info("ArticleWriterPipeline: wrote %d articles", self._count)
 
 
@@ -267,11 +267,11 @@ class IndexWriterPipeline:
         out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
         return cls(index_path=out_dir / "index.json")
 
-    def open_spider(self) -> None:
+    def open_spider(self, spider: object | None = None) -> None:
         self._tmp_path.parent.mkdir(parents=True, exist_ok=True)
         self._handle = self._tmp_path.open("w", encoding="utf-8")
 
-    def process_item(self, item: Any) -> Any:
+    def process_item(self, item: Any, spider: object | None = None) -> Any:
         if not isinstance(item, ArticleItem):
             return item
         logger.debug("IndexWriterPipeline received: %s", item.get("url", ""))
@@ -290,6 +290,7 @@ class IndexWriterPipeline:
             "word_count": schema.word_count,
             "reading_time_minutes": schema.reading_time_minutes,
             "extraction_method_used": schema.extraction_method_used,
+            "link_count": len(schema.links),
         }
         if self._handle:
             self._handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -297,7 +298,7 @@ class IndexWriterPipeline:
         self._count += 1
         return item
 
-    def close_spider(self) -> None:
+    def close_spider(self, spider: object | None = None) -> None:
         if self._handle:
             self._handle.close()
             self._handle = None

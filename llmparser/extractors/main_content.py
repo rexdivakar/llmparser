@@ -464,11 +464,17 @@ def extract_links(html: str, base_url: str = "", base_domain: str = "") -> list[
         if not isinstance(a, Tag):
             continue
         href = str(a.get("href") or "").strip()
-        if not href or href.startswith(("#", "mailto:")):
+        if not href:
+            continue
+        href_lower = href.lower()
+        if href_lower.startswith(("#", "mailto:", "javascript:", "tel:", "data:", "sms:")):
             continue
 
         if base_url:
             href = urljoin(base_url, href)
+        parsed = urlparse(href)
+        if parsed.scheme and parsed.scheme not in ("http", "https"):
+            continue
 
         if href in seen:
             continue

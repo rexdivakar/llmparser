@@ -218,7 +218,8 @@ class BlogSpider(scrapy.Spider):
     # Start requests  (Scrapy 2.13+: async generator replaces start_requests)
     # ------------------------------------------------------------------
 
-    async def start(self) -> AsyncIterator[Request]:  # type: ignore[override]
+    def _iter_start_requests(self) -> Iterator[Request]:
+        """Shared start request generator for Scrapy 2.11+ compatibility."""
         # Attempt sitemap discovery first
         parsed = urlparse(self.start_url)
         base = f"{parsed.scheme}://{parsed.netloc}"
@@ -242,6 +243,13 @@ class BlogSpider(scrapy.Spider):
             meta={"depth": 0},
             priority=5,
         )
+
+    async def start(self) -> AsyncIterator[Request]:  # type: ignore[override]
+        for req in self._iter_start_requests():
+            yield req
+
+    def start_requests(self) -> Iterator[Request]:
+        yield from self._iter_start_requests()
 
     # ------------------------------------------------------------------
     # Sitemap parsing

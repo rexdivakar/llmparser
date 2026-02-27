@@ -457,7 +457,7 @@ def _write_summary_txt(out_dir: Path) -> None:
     h2("Links discovered per article")
     if articles:
         for e in articles:
-            lcount = len(e.get("links", []) or [])
+            lcount = int(e.get("link_count", 0) or 0)
             title  = (e.get("title") or e.get("url", "-"))[:60]
             lines.append(f"    {lcount:>5} links  —  {title}")
     else:

@@ -217,6 +217,11 @@ class Heuristics:
                 soup = BeautifulSoup(html, "lxml")
             except Exception:
                 return 0
+        else:
+            try:
+                soup = BeautifulSoup(str(soup), "lxml")
+            except Exception:
+                return 0
 
         # Remove noise elements for word counting
         for tag in ("nav", "header", "footer", "aside", "script", "style", "noscript"):

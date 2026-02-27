@@ -493,7 +493,7 @@ def adaptive_fetch_html(
 
     # ── Step 4: Playwright (JS render) ───────────────────────────────────────
     if strategy == "playwright":
-        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy)
+        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy, user_agent=user_agent)
         if pw_html and _raw_word_count(pw_html) > classification.signals.body_word_count:
             logger.info("Playwright strategy succeeded for %s", url)
             return FetchResult(
@@ -507,7 +507,7 @@ def adaptive_fetch_html(
         strategy != "playwright"
         and classification.signals.body_word_count < _MIN_CONTENT_WORDS
     ):
-        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy)
+        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy, user_agent=user_agent)
         if pw_html and _raw_word_count(pw_html) > classification.signals.body_word_count:
             logger.info("Playwright fallback succeeded for %s", url)
             return FetchResult(
@@ -552,11 +552,21 @@ def adaptive_fetch_html(
     )
 
 
-def _try_playwright(url: str, timeout: int = 30, proxy: str | None = None) -> str | None:
+def _try_playwright(
+    url: str,
+    timeout: int = 30,
+    proxy: str | None = None,
+    user_agent: str | None = None,
+) -> str | None:
     """Attempt a Playwright fetch; return HTML string or None on any failure."""
     try:
         from llmparser.query import _fetch_html_playwright
-        return _fetch_html_playwright(url, timeout=max(timeout, 60), proxy=proxy)
+        return _fetch_html_playwright(
+            url,
+            timeout=max(timeout, 60),
+            proxy=proxy,
+            user_agent=user_agent,
+        )
     except ImportError:
         if not _playwright_warned["value"]:
             logger.warning(

@@ -302,6 +302,7 @@ max_retries = 3
 | Failure | Handling |
 |---------|----------|
 | HTTP 429/5xx | Retry with Retry-After / exponential backoff (max 3 retries) |
+| HTTP 401/403/407 (query.fetch) | Treated as a block; proxy rotation retry if configured |
 | readability fails | Falls through to trafilatura → DOM heuristic (never hard-fails) |
 | Playwright unavailable | Warning logged; spider falls back to static HTML extraction |
 | Sitemap missing/invalid | Silently ignored (errback); BFS crawl continues normally |

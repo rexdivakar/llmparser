@@ -1,7 +1,7 @@
 """Scrapy downloader middlewares for llmparser.
 
-Scrapy 2.14+ compatible: middleware methods do NOT take a `spider` argument.
-Use `from_crawler()` to access spider/settings when needed.
+Compatible with Scrapy 2.11+ where middleware methods may receive a `spider`
+argument, and 2.13+ where it is optional.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class RotatingUserAgentMiddleware:
         ua_list = getattr(crawler, "settings", {}).get("USER_AGENT_LIST", _USER_AGENTS)
         return cls(ua_list)
 
-    def process_request(self, request: Request) -> None:
+    def process_request(self, request: Request, spider: object | None = None) -> None:
         ua = random.choice(self.user_agents)
         request.headers["User-Agent"] = ua
         logger.debug("UA for %s: %s", request.url, ua)
@@ -68,7 +68,7 @@ class PlaywrightLoggingMiddleware:
     (configured conditionally in __main__.py when chromium is available).
     """
 
-    def process_request(self, request: Request) -> None:
+    def process_request(self, request: Request, spider: object | None = None) -> None:
         if request.meta.get("playwright"):
             logger.debug(
                 "Playwright render: %s (retry=%s)",
@@ -76,7 +76,12 @@ class PlaywrightLoggingMiddleware:
                 request.meta.get("playwright_retry", False),
             )
 
-    def process_response(self, request: Request, response: Response) -> Response:
+    def process_response(
+        self,
+        request: Request,
+        response: Response,
+        spider: object | None = None,
+    ) -> Response:
         if request.meta.get("playwright"):
             logger.debug(
                 "Playwright response: %s status=%s len=%d",

@@ -79,10 +79,56 @@ class FetchError(RuntimeError):
         status -- HTTP status code (0 if no response was received)
     """
 
-    def __init__(self, message: str, url: str = "", status: int = 0) -> None:
+    def __init__(
+        self,
+        message: str,
+        url: str = "",
+        status: int = 0,
+        body: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.url = url
         self.status = status
+        self.body = body
+
+
+def _decode_response_body(
+    raw: bytes,
+    headers: object | None,
+    url: str,
+    *,
+    allow_brotli: bool = False,
+) -> str:
+    encoding = ""
+    if headers is not None:
+        try:
+            encoding = str(headers.get("Content-Encoding", "")).lower().strip()
+        except Exception:
+            encoding = ""
+
+    if encoding == "gzip":
+        raw = gzip.decompress(raw)
+    elif encoding in ("deflate", "zlib"):
+        raw = zlib.decompress(raw)
+    elif encoding == "br":
+        if allow_brotli:
+            return ""
+        raise FetchError(
+            f"Brotli-encoded response from {url} — install 'brotli' or "
+            "use render_js=True to let Playwright handle it",
+            url=url,
+        )
+
+    charset = "utf-8"
+    if headers is not None:
+        try:
+            charset = headers.get_content_charset("utf-8") or "utf-8"
+        except Exception:
+            charset = "utf-8"
+    try:
+        return raw.decode(charset, errors="replace")
+    except (LookupError, ValueError):
+        return raw.decode("utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -156,36 +202,27 @@ def fetch_html(
         try:
             with _open(req, timeout=timeout) as resp:
                 raw: bytes = resp.read()
-                # urllib does NOT auto-decompress Content-Encoding — do it manually
-                encoding = resp.headers.get("Content-Encoding", "").lower().strip()
-                if encoding == "gzip":
-                    try:
-                        raw = gzip.decompress(raw)
-                    except OSError as exc:
-                        raise FetchError(
-                            f"gzip decompression failed for {url}: {exc}", url=url,
-                        ) from exc
-                elif encoding in ("deflate", "zlib"):
-                    try:
-                        raw = zlib.decompress(raw)
-                    except zlib.error as exc:
-                        raise FetchError(
-                            f"deflate decompression failed for {url}: {exc}", url=url,
-                        ) from exc
-                elif encoding == "br":
-                    raise FetchError(
-                        f"Brotli-encoded response from {url} — install 'brotli' or "
-                        "use render_js=True to let Playwright handle it",
-                        url=url,
-                    )
-                # Detect charset from Content-Type, fall back to utf-8
-                ct: str = resp.headers.get_content_charset("utf-8") or "utf-8"
                 try:
-                    return raw.decode(ct, errors="replace")
-                except (LookupError, ValueError):
-                    return raw.decode("utf-8", errors="replace")
+                    return _decode_response_body(raw, resp.headers, url, allow_brotli=False)
+                except OSError as exc:
+                    raise FetchError(
+                        f"gzip decompression failed for {url}: {exc}", url=url,
+                    ) from exc
+                except zlib.error as exc:
+                    raise FetchError(
+                        f"deflate decompression failed for {url}: {exc}", url=url,
+                    ) from exc
 
         except urllib.error.HTTPError as exc:
+            body_text = ""
+            try:
+                raw = exc.read()
+                if raw:
+                    body_text = _decode_response_body(
+                        raw, exc.headers, url, allow_brotli=True,
+                    )
+            except Exception:
+                body_text = ""
             if exc.code in _RETRY_CODES and attempt < max_retries:
                 # Honour Retry-After header (RFC 7231 §7.1.3) when present.
                 # Servers set this on 429 and some 503 responses.
@@ -206,12 +243,14 @@ def fetch_html(
                     f"HTTP {exc.code} fetching {url}: {exc.reason}",
                     url=url,
                     status=exc.code,
+                    body=body_text,
                 )
                 continue
             raise FetchError(
                 f"HTTP {exc.code} fetching {url}: {exc.reason}",
                 url=url,
                 status=exc.code,
+                body=body_text,
             ) from exc
 
         except urllib.error.URLError as exc:
@@ -242,13 +281,19 @@ def fetch_html(
     raise last_exc or FetchError(f"All retries exhausted for {url}", url=url)
 
 
-def _fetch_html_playwright(url: str, timeout: int = 30, proxy: str | None = None) -> str:
+def _fetch_html_playwright(
+    url: str,
+    timeout: int = 30,
+    proxy: str | None = None,
+    user_agent: str | None = None,
+) -> str:
     """Fetch *url* via a headless Chromium browser (requires playwright).
 
     Args:
         url:     Fully-qualified HTTP/HTTPS URL.
         timeout: Request timeout in seconds (Playwright gets max(timeout, 60)).
-        proxy:   Optional proxy URL forwarded to Playwright's browser context.
+        proxy:      Optional proxy URL forwarded to Playwright's browser context.
+        user_agent: Optional user-agent string for the browser context.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -271,9 +316,10 @@ def _fetch_html_playwright(url: str, timeout: int = 30, proxy: str | None = None
                 ],
             )
             try:
+                ua = user_agent or _DEFAULT_UA
                 if proxy:
                     ctx = browser.new_context(
-                        user_agent=_DEFAULT_UA,
+                        user_agent=ua,
                         java_script_enabled=True,
                         viewport={"width": 1920, "height": 1080},
                         extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
@@ -281,7 +327,7 @@ def _fetch_html_playwright(url: str, timeout: int = 30, proxy: str | None = None
                     )
                 else:
                     ctx = browser.new_context(
-                        user_agent=_DEFAULT_UA,
+                        user_agent=ua,
                         java_script_enabled=True,
                         viewport={"width": 1920, "height": 1080},
                         extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
@@ -522,7 +568,7 @@ def extract(
         is_blocked=block.is_blocked,
         block_type=block.block_type,
         block_reason=block.block_reason,
-        confidence_score=min(1.0, article_score / 80.0),
+        confidence_score=max(0.0, min(1.0, article_score / 80.0)),
         is_empty=word_count < 20,
     )
 
@@ -590,9 +636,20 @@ def fetch(
 
     max_block_retries = min(5, len(proxy_list)) if proxy_list else 0
 
+    def _is_blocked_error(exc: FetchError) -> bool:
+        try:
+            return detect_block(exc.body or "", url=url, status_code=exc.status).is_blocked
+        except Exception:
+            return exc.status in (401, 403, 407)
+
     def _do_fetch(proxy: str | None) -> ArticleSchema:
         if render_js:
-            html = _fetch_html_playwright(url, timeout=timeout, proxy=proxy)
+            html = _fetch_html_playwright(
+                url,
+                timeout=timeout,
+                proxy=proxy,
+                user_agent=user_agent,
+            )
             return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
         result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent, proxy=proxy)
         article = extract(
@@ -613,7 +670,35 @@ def fetch(
         return article
 
     current_proxy = rotator.get_proxy() if rotator else None
-    article = _do_fetch(current_proxy)
+    try:
+        article = _do_fetch(current_proxy)
+    except FetchError as exc:
+        if retry_on_block and rotator and _is_blocked_error(exc):
+            for attempt in range(max_block_retries):
+                if current_proxy is not None:
+                    rotator.mark_failed(current_proxy)
+                current_proxy = rotator.rotate()
+                if current_proxy is None or not rotator.has_proxies():
+                    logger.warning(
+                        "fetch: all proxies exhausted after HTTP block for %s (status=%s)",
+                        url, exc.status,
+                    )
+                    break
+                logger.info(
+                    "fetch: HTTP block (%s) for %s — retrying with proxy %s (attempt %d/%d)",
+                    exc.status, url, current_proxy, attempt + 1, max_block_retries,
+                )
+                try:
+                    article = _do_fetch(current_proxy)
+                except FetchError as next_exc:
+                    if _is_blocked_error(next_exc):
+                        continue
+                    raise
+                if not article.is_blocked:
+                    rotator.mark_success(current_proxy)
+                    return article
+            raise
+        raise
 
     if retry_on_block and rotator and article.is_blocked:
         for attempt in range(max_block_retries):
@@ -633,7 +718,11 @@ def fetch(
             article = _do_fetch(current_proxy)
             if not article.is_blocked:
                 logger.info("fetch: block resolved with proxy %s for %s", current_proxy, url)
+                rotator.mark_success(current_proxy)
                 break
+
+    if rotator and current_proxy and not article.is_blocked:
+        rotator.mark_success(current_proxy)
 
     return article
 

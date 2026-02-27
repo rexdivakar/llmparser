@@ -104,13 +104,37 @@ def _split_paragraph(article: ArticleSchema, chunk_size: int, overlap: int) -> l
                     segments.append(text)
             elif btype == "code":
                 text = block.get("text", "").strip()
-                lang = block.get("lang", "")
+                lang = block.get("language", "")
                 if text:
                     segments.append(f"```{lang}\n{text}\n```")
-            elif btype in ("list", "quote", "table"):
+            elif btype == "list":
+                items = block.get("items") or []
+                if isinstance(items, list) and items:
+                    ordered = bool(block.get("ordered", False))
+                    lines = []
+                    for i, item in enumerate(items, 1):
+                        prefix = f"{i}." if ordered else "-"
+                        lines.append(f"{prefix} {item}")
+                    segments.append("\n".join(lines))
+            elif btype == "quote":
                 text = block.get("text", "").strip()
                 if text:
-                    segments.append(text)
+                    lines = [f"> {line}" for line in text.splitlines() if line.strip()]
+                    segments.append("\n".join(lines))
+            elif btype == "table":
+                rows = block.get("rows") or []
+                if isinstance(rows, list) and rows:
+                    header = [str(c) for c in rows[0]]
+                    lines = ["| " + " | ".join(header) + " |"]
+                    lines.append("| " + " | ".join("---" for _ in header) + " |")
+                    for row in rows[1:]:
+                        lines.append("| " + " | ".join(str(c) for c in row) + " |")
+                    segments.append("\n".join(lines))
+            elif btype == "image":
+                url = block.get("url", "").strip()
+                alt = block.get("alt", "").strip()
+                if url:
+                    segments.append(f"![{alt}]({url})")
     else:
         # Fall back: split content_text on double newlines
         raw = article.content_text or article.content_markdown or ""

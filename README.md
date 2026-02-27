@@ -131,6 +131,7 @@ is generic HTML semantics — which means LLMParser works on sites that don't ex
 - **Pagination auto-follow** — detects `<link rel="next">` and traverses paginated archives
 - **Incremental resume** — skip previously-seen URLs; cross-crawl dedup via `index.json`
 - **Concurrent batch API** — `fetch_batch()` fetches multiple URLs in parallel
+- **Block-aware proxy retry** — retries on bot blocks and HTTP 401/403/407 when proxies are provided
 - **Polite crawling** — robots.txt, auto-throttle, Retry-After header support
 - **Structured output** — JSON + Markdown per page; `index.json` + `index.csv` summaries
 - **Native RAG integration** — `chunk_article()` with paragraph/fixed/sentence strategies; LangChain + LlamaIndex adapters; JSONL export for Pinecone/Chroma/Weaviate/Qdrant
@@ -190,6 +191,8 @@ out/
 ├── skipped.jsonl                  # Skipped URLs with reasons
 └── summary.txt                    # Plain-text crawl report
 ```
+
+`index.json` and `index.csv` include `link_count` (number of extracted hyperlinks per article).
 
 ---
 

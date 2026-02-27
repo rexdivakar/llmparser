@@ -226,7 +226,8 @@ print(article.content_markdown)
 
 ## Index JSON (`out/index.json`)
 
-Array of summary objects, sorted by `published_at` descending (unparseable dates last):
+Array of summary objects, sorted by `published_at` descending (unparseable dates last).
+Includes `link_count` (number of extracted hyperlinks in the article body).
 
 ```json
 [
@@ -240,7 +241,8 @@ Array of summary objects, sorted by `published_at` descending (unparseable dates
     "tags": ["python", "web-scraping"],
     "word_count": 842,
     "reading_time_minutes": 5,
-    "extraction_method_used": "readability"
+    "extraction_method_used": "readability",
+    "link_count": 12
   }
 ]
 ```

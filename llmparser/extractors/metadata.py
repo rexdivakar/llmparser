@@ -105,10 +105,17 @@ def _extract_jsonld(soup: BeautifulSoup) -> dict:
         for node in nodes:
             if not isinstance(node, dict):
                 continue
-            dtype = str(node.get("@type", "")).lower()
-            if dtype not in _ARTICLE_TYPES and dtype not in {"webpage", "website"}:
+            raw_type = node.get("@type", "")
+            if isinstance(raw_type, list):
+                types = [str(t).lower() for t in raw_type if t]
+            else:
+                types = [str(raw_type).lower()] if raw_type else []
+
+            is_article = any(t in _ARTICLE_TYPES for t in types)
+            is_page = any(t in {"webpage", "website"} for t in types)
+            if not (is_article or is_page):
                 continue
-            if dtype in _ARTICLE_TYPES or not result:
+            if is_article or not result:
                 result = node
 
     return result
