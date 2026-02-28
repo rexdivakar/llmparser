@@ -203,6 +203,7 @@ out/
 ```
 
 `index.json` and `index.csv` include `link_count` (number of extracted hyperlinks per article).
+`skipped.jsonl` records explicit skip reasons; `low_article_score (N)` means the page scored below the extraction threshold (`35`).
 
 ---
 

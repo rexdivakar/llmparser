@@ -268,9 +268,18 @@ One JSON object per line:
 
 ```jsonl
 {"url": "https://example.com/tag/python", "reason": "low_article_score (12)", "timestamp": "2024-02-24T12:00:00+00:00"}
-{"url": "https://example.com/page/2", "reason": "excluded_pattern (/page/)", "timestamp": "2024-02-24T12:01:00+00:00"}
-{"url": "https://example.com/short", "reason": "content too short (<10 words)", "timestamp": "2024-02-24T12:02:00+00:00"}
+{"url": "https://example.com/landing", "reason": "include_regex_mismatch", "timestamp": "2024-02-24T12:01:00+00:00"}
+{"url": "https://example.com/news", "reason": "extraction_returned_empty", "timestamp": "2024-02-24T12:02:00+00:00"}
+{"url": "https://example.com/short", "reason": "content too short (<10 words)", "timestamp": "2024-02-24T12:03:00+00:00"}
 ```
+
+Common `reason` values:
+
+- `low_article_score (N)`: Heuristic score `N` did not meet the extraction threshold (`35`).
+- `include_regex_mismatch`: URL was crawled but excluded from extraction by `--include-regex`.
+- `extraction_returned_empty`: Extractor ran but yielded no usable content payload.
+- `content too short (<10 words)`: Validation pipeline dropped an item with too little extracted text.
+- `http_status_<code>` / `non_html_content_type (...)` / `not_modified_304`: Fetch-level skip recorded by the spider.
 
 ---
 

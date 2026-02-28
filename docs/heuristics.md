@@ -17,9 +17,12 @@ Threshold: **≥ 35** → treat as article and attempt extraction.
 |--------|-------|---------|
 | Known article path segment | +15 | Path contains `/blog/`, `/post/`, `/posts/`, `/article/`, `/articles/`, `/news/`, `/story/`, `/stories/`, `/essay/`, `/essays/`, `/journal/`, `/write/`, `/p/` |
 | Date in URL path | +10 | `\d{4}/\d{2}(/\d{2})?` in path |
-| Long slug (≥4 path segments) | +5 | e.g. `/en/blog/2024/my-great-post` |
-| Single-segment path (home/about/etc) | −20 | Path depth ≤ 1 |
-| Excluded path pattern | −30 | Path contains `/tag/`, `/tags/`, `/category/`, `/categories/`, `/search`, `/login`, `/signup`, `/register`, `/privacy`, `/terms`, `/contact`, `/about`, `/archive`, `/archives/`, `/feed`, `/rss`, `/sitemap` |
+| Deep path (≥4 path segments) | +5 | e.g. `/en/blog/2024/my-great-post` |
+| Two-segment path | +3 | e.g. `/2024/my-post` or `/category/post` |
+| Single-segment long slug (>25 chars) | +3 | e.g. `/a-very-long-article-title-slug` |
+| Single-segment short slug | −10 | e.g. `/about`, `/skills`, `/chrome` |
+| Root URL (`/`) | −20 | No content path segments |
+| Excluded path pattern | −30 | Path contains `/tag/`, `/tags/`, `/category/`, `/categories/`, `/search`, `/login`, `/signin`, `/signup`, `/register`, `/logout`, `/privacy`, `/terms`, `/archive`, `/archives/`, `/feed`, `/rss`, `/sitemap`, `/page/<n>` |
 | Paginated URL | −15 | Path ends with `/page/\d+` or query `page=\d+` |
 | Author listing | −10 | Path contains `/author/` with no further slug |
 
@@ -34,10 +37,21 @@ Threshold: **≥ 35** → treat as article and attempt extraction.
 | Published date in metadata | +10 | Any date meta tag or JSON-LD datePublished |
 | JSON-LD type is article-like | +10 | `@type` in {Article, BlogPosting, NewsArticle, TechArticle, ScholarlyArticle} |
 | OG type is article | +5 | `og:type == "article"` |
-| Paragraph count > 3 | +5 | `<p>` elements with ≥ 20 chars each |
-| Many outbound links (> 20) | −10 | Likely a listing/navigation page |
+| 3+ substantial paragraphs | +5 | `<p>` elements with ≥ 20 words each |
+| Many outbound links (> 30) | −10 | Likely a listing/navigation page |
 | `rel="next"` or `rel="prev"` | −15 | Pagination; even if it has content |
 | Very short text (< 50 words) | −20 | After stripping boilerplate |
+
+### Interpreting `low_article_score (N)` in `skipped.jsonl`
+
+- Extraction is attempted only when `N >= 35`.
+- `low_article_score (30)` means the page was close to passing (5 points short).
+- `low_article_score (15)` means the page looked substantially less article-like (20 points short).
+- A common pattern for product/landing pages is:
+  - URL penalty from short single-segment slugs (`-10`)
+  - Some positive content signals (enough words, one `<h1>`)
+  - Missing article metadata (`author`, `datePublished`, `og:type=article`, JSON-LD article type)
+  - Optional link-density penalty when pages are navigation-heavy
 
 ### Score Examples
 
@@ -157,6 +171,7 @@ JS_ROOT_SELECTORS = [
     '#__nuxt',        # Nuxt.js
     '#app-root',      # Angular
     '#gatsby-focus-wrapper',  # Gatsby
+    '#ember-application',      # Ember
     '[data-reactroot]',
     '[data-server-rendered]',
     'div[ng-app]',
@@ -173,7 +188,7 @@ script_count = len(soup.find_all('script', src=True))
 #### Signal 4: Meaningful noscript content
 ```python
 for noscript in soup.find_all('noscript'):
-    if len(noscript.get_text().split()) > 20:
+    if len(noscript.get_text().split()) > 15:
         return True
 ```
 
@@ -310,7 +325,7 @@ If no body, return the original HTML unchanged.
 /wp-json/
 /wp-admin/
 /xmlrpc.php
-.amp(?|$)      ← AMP duplicate URLs
+\.amp(\?|$)    ← AMP duplicate URLs
 ```
 
 ### Soft-exclude (crawled for links, but scored low for extraction)
@@ -318,9 +333,9 @@ If no body, return the original HTML unchanged.
 Applied via article scoring penalties (see §1):
 ```
 /tag/   /tags/   /category/   /categories/
-/search  /login   /signup   /register
-/privacy  /terms   /contact   /about
-/archive  /archives  /feed  /rss  /sitemap
+/search  /login   /signin   /signup   /register   /logout
+/privacy  /terms   /archive  /archives  /feed  /rss  /sitemap
+/page/<n>
 ```
 
 ### Excluded by extension
