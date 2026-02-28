@@ -47,6 +47,8 @@ dependencies = [
   "pydantic>=2.5",
   "markdownify>=0.13",
   "rich>=13.0",
+  "pyyaml>=6.0",
+  "langdetect>=1.0.9",
 ]
 
 [project.urls]

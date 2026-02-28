@@ -91,6 +91,7 @@ ITEM_PIPELINES: dict[str, int] = {
 # ---------------------------------------------------------------------------
 EXTENSIONS: dict[str, int] = {
     "llmparser.extensions.RichProgressExtension": 500,
+    "llmparser.extensions.TelemetryExtension": 550,
 }
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ EXTENSIONS: dict[str, int] = {
 # ---------------------------------------------------------------------------
 PROGRESS_ENABLED = False
 SPIDER_MAX_PAGES = 500  # kept in sync with --max-pages via __main__.py
+TELEMETRY_ENABLED = False
 
 # ---------------------------------------------------------------------------
 # Output directory (override via CLI --out or spider argument)

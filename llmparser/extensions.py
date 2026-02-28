@@ -11,9 +11,13 @@ Scrapy signals.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import threading
 import time
+from collections import Counter
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -139,3 +143,109 @@ class RichProgressExtension:
 
         except Exception as exc:
             logger.debug("RichProgressExtension: progress bar error: %s", exc)
+
+
+class TelemetryExtension:
+    """Collect and write crawl telemetry as JSON."""
+
+    def __init__(self, out_dir: Path, enabled: bool) -> None:
+        self._out_dir = out_dir
+        self._enabled = enabled
+        self._start = 0.0
+        self._responses = 0
+        self._articles = 0
+        self._errors = 0
+        self._bytes = 0
+        self._status_counts: Counter[int] = Counter()
+        self._block_counts: Counter[str] = Counter()
+        self._latency_total = 0.0
+        self._latency_count = 0
+
+    @classmethod
+    def from_crawler(cls, crawler: Crawler) -> TelemetryExtension:
+        from scrapy import signals
+
+        out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
+        enabled = crawler.settings.getbool("TELEMETRY_ENABLED", False)
+        ext = cls(out_dir=out_dir, enabled=enabled)
+        crawler.signals.connect(ext.spider_opened, signal=signals.spider_opened)
+        crawler.signals.connect(ext.response_received, signal=signals.response_received)
+        crawler.signals.connect(ext.item_scraped, signal=signals.item_scraped)
+        crawler.signals.connect(ext.spider_error, signal=signals.spider_error)
+        crawler.signals.connect(ext.spider_closed, signal=signals.spider_closed)
+        return ext
+
+    def spider_opened(self, spider: object) -> None:
+        if not self._enabled:
+            return
+        self._start = time.monotonic()
+
+    def response_received(self, response: object, request: object, spider: object) -> None:
+        if not self._enabled:
+            return
+        try:
+            status = int(getattr(response, "status", 0) or 0)
+            self._status_counts[status] += 1
+            self._responses += 1
+            body = getattr(response, "body", b"") or b""
+            self._bytes += len(body)
+            latency = getattr(response, "meta", {}).get("download_latency")
+            if isinstance(latency, (int, float)):
+                self._latency_total += float(latency)
+                self._latency_count += 1
+            if status == 200:
+                with contextlib.suppress(Exception):
+                    from llmparser.extractors.block_detection import detect_block
+
+                    html = ""
+                    if isinstance(body, (bytes, bytearray)):
+                        html = body.decode("utf-8", errors="ignore")
+                    elif isinstance(body, str):
+                        html = body
+                    result = detect_block(html, status_code=status)
+                    if result.is_blocked and result.block_type:
+                        self._block_counts[result.block_type] += 1
+        except Exception as exc:
+            logger.debug("Telemetry response parsing failed: %s", exc)
+
+    def item_scraped(self, item: object, spider: object) -> None:
+        if self._enabled:
+            self._articles += 1
+
+    def spider_error(self, failure: object, response: object, spider: object) -> None:
+        if self._enabled:
+            self._errors += 1
+
+    def spider_closed(self, spider: object, reason: str) -> None:
+        if not self._enabled:
+            return
+        elapsed = max(0.001, time.monotonic() - self._start)
+        telemetry = {
+            "reason": reason,
+            "responses": self._responses,
+            "articles": self._articles,
+            "errors": self._errors,
+            "bytes": self._bytes,
+            "responses_per_sec": round(self._responses / elapsed, 3),
+            "avg_latency_ms": (
+                round((self._latency_total / self._latency_count) * 1000.0, 3)
+                if self._latency_count
+                else None
+            ),
+            "status_counts": dict(self._status_counts),
+            "block_counts": dict(self._block_counts),
+            "block_rate": (
+                round(sum(self._block_counts.values()) / self._responses, 6)
+                if self._responses
+                else 0.0
+            ),
+            "elapsed_sec": round(elapsed, 3),
+        }
+        try:
+            self._out_dir.mkdir(parents=True, exist_ok=True)
+            (self._out_dir / "telemetry.json").write_text(
+                json.dumps(telemetry, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Could not write telemetry.json: %s", exc)

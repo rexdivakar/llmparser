@@ -10,7 +10,10 @@ out/
 │   └── ...
 ├── index.json               # Summary list, sorted by published_at descending
 ├── index.csv                # Same summary as CSV (spreadsheet / pandas ready)
+├── dedup.jsonl              # Cross-run dedup hashes (content/title/canonical)
+├── etag_cache.json           # ETag/Last-Modified cache (delta mode)
 ├── skipped.jsonl            # JSONL log of skipped URLs with reasons
+├── telemetry.json           # Optional crawl telemetry (enabled with --telemetry)
 └── summary.txt              # Plain-text crawl report
 ```
 

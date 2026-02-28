@@ -40,6 +40,7 @@ from llmparser.query import fetch as _fetch
 from llmparser.query import parse as _parse
 
 if TYPE_CHECKING:
+    from llmparser.auth import AuthSession
     from llmparser.items import ArticleSchema
 
 
@@ -62,6 +63,9 @@ class LLMParser:
         render_js:       If ``True``, use Playwright for all ``fetch()`` calls
                          regardless of the page type.  Requires
                          ``playwright install chromium``.
+        auth:            Optional AuthSession (headers/cookies/token refresh).
+        rate_limit_per_domain: Optional per-domain rate limit (requests/sec).
+        playwright_page_methods: Optional Playwright page method calls.
     """
 
     def __init__(
@@ -71,12 +75,18 @@ class LLMParser:
         retry_on_block: bool = True,
         timeout: int = 30,
         render_js: bool = False,
+        auth: AuthSession | None = None,
+        rate_limit_per_domain: float | None = None,
+        playwright_page_methods: list[dict] | None = None,
     ) -> None:
         self._proxy_list = proxy_list
         self._proxy_rotation = proxy_rotation
         self._retry_on_block = retry_on_block
         self._timeout = timeout
         self._render_js = render_js
+        self._auth = auth
+        self._rate_limit_per_domain = rate_limit_per_domain
+        self._playwright_page_methods = playwright_page_methods
 
     # ------------------------------------------------------------------
     # Public methods
@@ -105,6 +115,9 @@ class LLMParser:
         kwargs.setdefault("retry_on_block", self._retry_on_block)
         kwargs.setdefault("timeout", self._timeout)
         kwargs.setdefault("render_js", self._render_js)
+        kwargs.setdefault("auth", self._auth)
+        kwargs.setdefault("rate_limit_per_domain", self._rate_limit_per_domain)
+        kwargs.setdefault("playwright_page_methods", self._playwright_page_methods)
         return _fetch(url, **kwargs)
 
     def parse(self, html: str, url: str = "") -> ArticleSchema:

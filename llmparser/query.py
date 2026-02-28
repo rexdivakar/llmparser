@@ -32,16 +32,21 @@ Low-level access::
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import logging
+import os
 import random
 import time
 import urllib.error
 import urllib.request
 import zlib
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+if TYPE_CHECKING:
+    from llmparser.auth import AuthSession
 from llmparser.extractors.block_detection import detect_block
 from llmparser.extractors.blocks import html_to_blocks
 from llmparser.extractors.feed import parse_feed
@@ -54,7 +59,10 @@ from llmparser.extractors.main_content import (
 from llmparser.extractors.markdown import html_to_markdown
 from llmparser.extractors.metadata import extract_metadata
 from llmparser.items import ArticleSchema
+from llmparser.language import detect_language
+from llmparser.playwright_pool import get_playwright_pool
 from llmparser.proxy import ProxyConfig, ProxyRotator
+from llmparser.rate_limit import DomainRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +153,8 @@ def fetch_html(
     user_agent: str | None = None,
     max_retries: int = 3,
     proxy: str | None = None,
+    auth: AuthSession | None = None,
+    rate_limiter: DomainRateLimiter | None = None,
 ) -> str:
     """Fetch *url* and return the response body as a decoded string.
 
@@ -169,6 +179,9 @@ def fetch_html(
     if parsed.scheme not in ("http", "https"):
         raise FetchError(f"Unsupported URL scheme: {parsed.scheme!r}", url=url)
 
+    if rate_limiter:
+        rate_limiter.wait(url)
+
     ua = user_agent or _DEFAULT_UA
     req = urllib.request.Request(
         url,
@@ -190,6 +203,8 @@ def fetch_html(
             "Cache-Control": "max-age=0",
         },
     )
+    if auth:
+        auth.apply_headers(url, req.headers)
 
     if proxy:
         proxy_handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
@@ -223,6 +238,11 @@ def fetch_html(
                     )
             except Exception:
                 body_text = ""
+            if exc.code == 401 and auth and auth.refresh:
+                auth.refresh_if_needed()
+                auth.apply_headers(url, req.headers)
+                if attempt < max_retries:
+                    continue
             if exc.code in _RETRY_CODES and attempt < max_retries:
                 # Honour Retry-After header (RFC 7231 §7.1.3) when present.
                 # Servers set this on 429 and some 503 responses.
@@ -286,26 +306,52 @@ def _fetch_html_playwright(
     timeout: int = 30,
     proxy: str | None = None,
     user_agent: str | None = None,
+    auth: AuthSession | None = None,
+    page_methods: list[dict] | None = None,
+    rate_limiter: DomainRateLimiter | None = None,
 ) -> str:
     """Fetch *url* via a headless Chromium browser (requires playwright).
 
     Args:
         url:     Fully-qualified HTTP/HTTPS URL.
         timeout: Request timeout in seconds (Playwright gets max(timeout, 60)).
-        proxy:      Optional proxy URL forwarded to Playwright's browser context.
-        user_agent: Optional user-agent string for the browser context.
+        proxy:        Optional proxy URL forwarded to Playwright's browser context.
+        user_agent:   Optional user-agent string for the browser context.
+        auth:         Optional AuthSession to apply headers/cookies.
+        page_methods: Optional list of page method calls (JS interactions).
+        rate_limiter: Optional per-domain rate limiter.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise FetchError(
-            "render_js=True requires playwright: pip install playwright && "
-            "playwright install chromium",
-            url=url,
-        ) from exc
+    if rate_limiter:
+        rate_limiter.wait(url)
 
     try:
-        with sync_playwright() as p:
+        ua = user_agent or _DEFAULT_UA
+        base_headers = {"Accept-Language": "en-US,en;q=0.9"}
+        if auth:
+            auth.apply_headers(url, base_headers)
+
+        use_pool = os.getenv("LLMPARSER_PW_POOL", "1") != "0"
+        ctx = None
+        browser = None
+        if use_pool:
+            pool = get_playwright_pool()
+            key = (ua, proxy, tuple(sorted(base_headers.items())))
+            ctx_kwargs = {
+                "user_agent": ua,
+                "java_script_enabled": True,
+                "viewport": {"width": 1920, "height": 1080},
+                "extra_http_headers": base_headers,
+            }
+            if proxy:
+                ctx_kwargs["proxy"] = {"server": proxy}
+            ctx = pool.get_context(
+                key,
+                **ctx_kwargs,
+            )
+        else:
+            from playwright.sync_api import sync_playwright
+
+            p = sync_playwright().start()
             browser = p.chromium.launch(
                 headless=True,
                 args=[
@@ -315,125 +361,124 @@ def _fetch_html_playwright(
                     "--disable-gpu",
                 ],
             )
+            ctx_kwargs = {
+                "user_agent": ua,
+                "java_script_enabled": True,
+                "viewport": {"width": 1920, "height": 1080},
+                "extra_http_headers": base_headers,
+            }
+            if proxy:
+                ctx_kwargs["proxy"] = {"server": proxy}
+            ctx = browser.new_context(**ctx_kwargs)
+
+        if auth:
+            cookies = auth.playwright_cookies(url)
+            if cookies:
+                ctx.add_cookies(cookies)
+
+        page = ctx.new_page()
+        try:
+            effective_timeout = max(timeout, 60) * 1_000
+
+            # Phase 1: wait for "load" (HTML + synchronous scripts ready)
             try:
-                ua = user_agent or _DEFAULT_UA
-                if proxy:
-                    ctx = browser.new_context(
-                        user_agent=ua,
-                        java_script_enabled=True,
-                        viewport={"width": 1920, "height": 1080},
-                        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                        proxy={"server": proxy},
-                    )
-                else:
-                    ctx = browser.new_context(
-                        user_agent=ua,
-                        java_script_enabled=True,
-                        viewport={"width": 1920, "height": 1080},
-                        extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                    )
-                page = ctx.new_page()
-                effective_timeout = max(timeout, 60) * 1_000
+                page.goto(url, timeout=effective_timeout, wait_until="load")
+            except Exception:
+                logger.warning("Playwright 'load' timed out for %s — continuing", url)
 
-                # Phase 1: wait for "load" (HTML + synchronous scripts ready)
-                try:
-                    page.goto(url, timeout=effective_timeout, wait_until="load")
-                except Exception:
-                    logger.warning(
-                        "Playwright 'load' timed out for %s — continuing", url,
-                    )
+            # Phase 2: short networkidle wait so SPAs (Angular, React, Vue)
+            try:
+                page.wait_for_load_state("networkidle", timeout=12_000)
+                logger.debug("Playwright networkidle reached for %s", url)
+            except Exception:
+                logger.debug("Playwright networkidle timed out for %s — continuing", url)
 
-                # Phase 2: short networkidle wait so SPAs (Angular, React, Vue)
-                # can finish their initial XHR/fetch bootstrap calls.
-                # We cap at 12 s — many analytics-heavy sites never fully settle.
-                try:
-                    page.wait_for_load_state("networkidle", timeout=12_000)
-                    logger.debug("Playwright networkidle reached for %s", url)
-                except Exception:
+            # Phase 3: wait for the DOM to actually contain meaningful text.
+            try:
+                page.wait_for_function(
+                    "() => document.body.innerText.trim()"
+                    ".split(/\\s+/).filter(Boolean).length > 50",
+                    timeout=12_000,
+                )
+                logger.debug("Playwright DOM hydration confirmed for %s", url)
+            except Exception:
+                logger.debug(
+                    "Playwright DOM hydration wait timed out for %s — grabbing partial content",
+                    url,
+                )
+
+            # Phase 4: expand accordion / collapsible sections
+            try:
+                expanded: int = page.evaluate("""() => {
+                    let count = 0;
+                    document.querySelectorAll('[aria-expanded="false"]').forEach(el => {
+                        try { el.click(); count++; } catch (e) {}
+                    });
+                    document.querySelectorAll('details:not([open])').forEach(el => {
+                        el.setAttribute('open', '');
+                        count++;
+                    });
+                    document.querySelectorAll(
+                        'mat-expansion-panel:not(.mat-expanded), ' +
+                        '.mat-expansion-panel:not(.mat-expanded)'
+                    ).forEach(el => {
+                        const header = el.querySelector(
+                            'mat-expansion-panel-header, ' +
+                            '.mat-expansion-panel-header'
+                        );
+                        if (header) { try { header.click(); count++; } catch(e) {} }
+                    });
+                    document.querySelectorAll(
+                        '.collapse:not(.show), ' +
+                        '[data-bs-toggle="collapse"], ' +
+                        '[data-toggle="collapse"]'
+                    ).forEach(el => {
+                        try { el.click(); count++; } catch (e) {}
+                    });
+                    return count;
+                }""")
+                if expanded > 0:
                     logger.debug(
-                        "Playwright networkidle timed out for %s — continuing", url,
+                        "Playwright expanded %d accordion sections for %s",
+                        expanded, url,
                     )
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=6_000)
+                    except Exception:
+                        page.wait_for_timeout(1_500)
+            except Exception as exc:
+                logger.debug("Playwright accordion expansion failed for %s: %s", url, exc)
 
-                # Phase 3: wait for the DOM to actually contain meaningful text.
-                # This catches SPAs that finish rendering *after* networkidle
-                # (e.g. Angular apps that stream data via WebSocket or long-poll).
-                try:
-                    page.wait_for_function(
-                        "() => document.body.innerText.trim()"
-                        ".split(/\\s+/).filter(Boolean).length > 50",
-                        timeout=12_000,
-                    )
-                    logger.debug("Playwright DOM hydration confirmed for %s", url)
-                except Exception:
-                    logger.debug(
-                        "Playwright DOM hydration wait timed out for %s — "
-                        "grabbing partial content",
-                        url,
-                    )
+            if page_methods:
+                for entry in page_methods:
+                    method = entry.get("method")
+                    args = entry.get("args", [])
+                    if not method:
+                        continue
+                    try:
+                        getattr(page, method)(*args)
+                    except Exception as exc:
+                        logger.debug("Playwright method %s failed for %s: %s", method, url, exc)
 
-                # Phase 4: expand accordion / collapsible sections so their
-                # content is present in the DOM before we capture the HTML.
-                # Targets: aria-expanded=false, <details>, mat-expansion-panel,
-                # and common CSS-hidden expandable containers.
-                try:
-                    expanded: int = page.evaluate("""() => {
-                        let count = 0;
-
-                        // ARIA-based accordions (most frameworks)
-                        document.querySelectorAll('[aria-expanded="false"]').forEach(el => {
-                            try { el.click(); count++; } catch (e) {}
-                        });
-
-                        // Native HTML <details> (not yet open)
-                        document.querySelectorAll('details:not([open])').forEach(el => {
-                            el.setAttribute('open', '');
-                            count++;
-                        });
-
-                        // Angular Material / CDK expansion panels
-                        document.querySelectorAll(
-                            'mat-expansion-panel:not(.mat-expanded), ' +
-                            '.mat-expansion-panel:not(.mat-expanded)'
-                        ).forEach(el => {
-                            const header = el.querySelector(
-                                'mat-expansion-panel-header, '
-                                + '.mat-expansion-panel-header'
-                            );
-                            if (header) { try { header.click(); count++; } catch(e) {} }
-                        });
-
-                        // Bootstrap / generic collapsibles
-                        document.querySelectorAll(
-                            '.collapse:not(.show), '
-                            + '[data-bs-toggle="collapse"], '
-                            + '[data-toggle="collapse"]'
-                        ).forEach(el => {
-                            try { el.click(); count++; } catch (e) {}
-                        });
-
-                        return count;
-                    }""")
-                    if expanded > 0:
-                        logger.debug(
-                            "Playwright expanded %d accordion sections for %s",
-                            expanded, url,
-                        )
-                        # Wait for any AJAX content triggered by the expansions
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=6_000)
-                        except Exception:
-                            page.wait_for_timeout(1_500)
-                except Exception as exc:
-                    logger.debug("Playwright accordion expansion failed for %s: %s", url, exc)
-
-                html: str = page.content()
-                if not html.strip():
-                    raise FetchError(
-                        f"Playwright returned empty page for {url}", url=url,
-                    )
-                return html
-            finally:
-                browser.close()
+            html: str = page.content()
+            if not html.strip():
+                raise FetchError(f"Playwright returned empty page for {url}", url=url)
+            return html
+        finally:
+            with contextlib.suppress(Exception):
+                page.close()
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    browser.close()
+            if "p" in locals():
+                with contextlib.suppress(Exception):
+                    p.stop()
+    except ImportError as exc:
+        raise FetchError(
+            "render_js=True requires playwright: pip install playwright && "
+            "playwright install chromium",
+            url=url,
+        ) from exc
     except FetchError:
         raise
     except Exception as exc:
@@ -500,6 +545,11 @@ def extract(
 
     word_count = len(content_text.split())
 
+    # Language fallback
+    language = meta.get("language")
+    if not language and content_text:
+        language = detect_language(content_text)
+
     # Structured blocks
     try:
         blocks = html_to_blocks(result.html, base_url=url)
@@ -549,7 +599,7 @@ def extract(
         published_at=meta.get("published_at"),
         updated_at=meta.get("updated_at"),
         site_name=meta.get("site_name"),
-        language=meta.get("language"),
+        language=language,
         tags=meta.get("tags") or [],
         summary=meta.get("summary"),
         content_markdown=content_md,
@@ -585,6 +635,10 @@ def fetch(
     user_agent: str | None = None,
     proxy_list: list[str] | None = None,
     retry_on_block: bool = True,
+    auth: AuthSession | None = None,
+    rate_limit_per_domain: float | None = None,
+    playwright_page_methods: list[dict] | None = None,
+    rate_limiter: DomainRateLimiter | None = None,
 ) -> ArticleSchema:
     """Fetch *url* and return a fully-extracted :class:`~llmparser.items.ArticleSchema`.
 
@@ -605,6 +659,12 @@ def fetch(
                         the next proxy is selected and the request is retried.
         retry_on_block: If ``True`` (default), retry with a new proxy when a
                         block is detected.  Requires *proxy_list* to be set.
+        auth:           Optional AuthSession providing headers/cookies and
+                        optional token refresh for 401 responses.
+        rate_limit_per_domain: Optional per-domain rate limit (requests/sec).
+        playwright_page_methods: Optional list of Playwright page method calls
+                        to run after render (JS interactions).
+        rate_limiter:  Optional shared DomainRateLimiter instance.
 
     Returns:
         :class:`~llmparser.items.ArticleSchema` instance.  Access fields
@@ -649,9 +709,20 @@ def fetch(
                 timeout=timeout,
                 proxy=proxy,
                 user_agent=user_agent,
+                auth=auth,
+                page_methods=playwright_page_methods,
+                rate_limiter=rate_limiter,
             )
             return extract(html, url=url, fetch_strategy="playwright_forced", page_type=None)
-        result = adaptive_fetch_html(url, timeout=timeout, user_agent=user_agent, proxy=proxy)
+        result = adaptive_fetch_html(
+            url,
+            timeout=timeout,
+            user_agent=user_agent,
+            proxy=proxy,
+            auth=auth,
+            rate_limiter=rate_limiter,
+            playwright_page_methods=playwright_page_methods,
+        )
         article = extract(
             result.html,
             url=url,
@@ -669,6 +740,8 @@ def fetch(
         }
         return article
 
+    if rate_limiter is None and rate_limit_per_domain:
+        rate_limiter = DomainRateLimiter(rate_limit_per_domain)
     current_proxy = rotator.get_proxy() if rotator else None
     try:
         article = _do_fetch(current_proxy)
@@ -760,6 +833,9 @@ def fetch_feed(
     timeout: int = 30,
     user_agent: str | None = None,
     max_articles: int = 50,
+    auth: AuthSession | None = None,
+    rate_limit_per_domain: float | None = None,
+    playwright_page_methods: list[dict] | None = None,
 ) -> list[ArticleSchema]:
     """Fetch an RSS/Atom feed and extract each linked article.
 
@@ -776,6 +852,9 @@ def fetch_feed(
         user_agent:   Custom User-Agent string for all requests.
         max_articles: Maximum number of articles to fetch (default 50).
                       Feed entries beyond this limit are ignored.
+        auth:         Optional AuthSession for headers/cookies/token refresh.
+        rate_limit_per_domain: Optional per-domain rate limit (requests/sec).
+        playwright_page_methods: Optional Playwright page method calls.
 
     Returns:
         List of :class:`~llmparser.items.ArticleSchema` instances for
@@ -792,7 +871,15 @@ def fetch_feed(
         for article in articles:
             print(article.title, article.word_count)
     """
-    xml_text = fetch_html(feed_url, timeout=timeout, user_agent=user_agent)
+    xml_text = fetch_html(
+        feed_url,
+        timeout=timeout,
+        user_agent=user_agent,
+        auth=auth,
+        rate_limiter=DomainRateLimiter(rate_limit_per_domain)
+        if rate_limit_per_domain
+        else None,
+    )
     entries = parse_feed(xml_text, base_url=feed_url)
 
     if not entries:
@@ -802,7 +889,15 @@ def fetch_feed(
     logger.info("fetch_feed: %d entries in %s", len(entries), feed_url)
     urls = [e.url for e in entries[:max_articles]]
     return [
-        a for a in fetch_batch(urls, timeout=timeout, user_agent=user_agent, on_error="skip")
+        a for a in fetch_batch(
+            urls,
+            timeout=timeout,
+            user_agent=user_agent,
+            on_error="skip",
+            auth=auth,
+            rate_limit_per_domain=rate_limit_per_domain,
+            playwright_page_methods=playwright_page_methods,
+        )
         if a is not None
     ]
 
@@ -818,6 +913,9 @@ def fetch_batch(
     timeout: int = 30,
     user_agent: str | None = None,
     on_error: str = "skip",
+    auth: AuthSession | None = None,
+    rate_limit_per_domain: float | None = None,
+    playwright_page_methods: list[dict] | None = None,
 ) -> list[ArticleSchema | None]:
     """Fetch multiple URLs concurrently and return extracted articles.
 
@@ -834,6 +932,9 @@ def fetch_batch(
                      ``"skip"`` (default) — omit failed URLs from results;
                      ``"raise"`` — re-raise the first exception immediately;
                      ``"include"`` — include ``None`` in results for failures.
+        auth:        Optional AuthSession for headers/cookies/token refresh.
+        rate_limit_per_domain: Optional per-domain rate limit (requests/sec).
+        playwright_page_methods: Optional Playwright page method calls.
 
     Returns:
         List of :class:`~llmparser.items.ArticleSchema` instances.
@@ -863,10 +964,20 @@ def fetch_batch(
 
     # Preserve input order: slot results by original index
     results: list[ArticleSchema | None] = [None] * len(urls)
+    rate_limiter = (
+        DomainRateLimiter(rate_limit_per_domain) if rate_limit_per_domain else None
+    )
 
     def _fetch_one(idx: int, url: str) -> tuple[int, ArticleSchema | None]:
         try:
-            return idx, fetch(url, timeout=timeout, user_agent=user_agent)
+            return idx, fetch(
+                url,
+                timeout=timeout,
+                user_agent=user_agent,
+                auth=auth,
+                rate_limiter=rate_limiter,
+                playwright_page_methods=playwright_page_methods,
+            )
         except Exception as exc:
             if on_error == "raise":
                 raise

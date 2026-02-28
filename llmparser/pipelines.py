@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from llmparser.extractors.markdown import format_markdown_article
+from llmparser.extractors.urlnorm import normalize_url
 from llmparser.items import ArticleItem, ArticleSchema, article_item_to_schema
 
 if TYPE_CHECKING:
@@ -77,8 +78,41 @@ class ContentHashDedupPipeline:
     mismatches) are only written once per crawl.
     """
 
-    def __init__(self) -> None:
-        self._seen: set[str] = set()
+    def __init__(self, dedup_path: Path) -> None:
+        self._seen_content: set[str] = set()
+        self._seen_canonical: set[str] = set()
+        self._seen_title_hash: set[str] = set()
+        self._dedup_path = dedup_path
+        self._handle: Any = None
+
+    @classmethod
+    def from_crawler(cls, crawler: Crawler) -> ContentHashDedupPipeline:
+        out_dir = Path(crawler.settings.get("OUTPUT_DIR", "./out"))
+        return cls(dedup_path=out_dir / "dedup.jsonl")
+
+    def open_spider(self, spider: object | None = None) -> None:
+        if self._dedup_path.exists():
+            try:
+                for raw_line in self._dedup_path.read_text(encoding="utf-8").splitlines():
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    with contextlib.suppress(Exception):
+                        entry = json.loads(stripped)
+                        if entry.get("content_hash"):
+                            self._seen_content.add(entry["content_hash"])
+                        if entry.get("canonical_url"):
+                            self._seen_canonical.add(entry["canonical_url"])
+                        if entry.get("title_hash"):
+                            self._seen_title_hash.add(entry["title_hash"])
+            except Exception as exc:
+                logger.warning("Could not read dedup.jsonl: %s", exc)
+        self._dedup_path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self._dedup_path.open("a", encoding="utf-8")
+
+    def close_spider(self, spider: object | None = None) -> None:
+        if self._handle:
+            self._handle.close()
 
     def process_item(self, item: Any, spider: object | None = None) -> Any:
         if not isinstance(item, ArticleItem):
@@ -90,12 +124,43 @@ class ContentHashDedupPipeline:
             return item
 
         digest = hashlib.sha256(content[:5_000].encode()).hexdigest()[:16]
-        if digest in self._seen:
+        title = (item.get("title") or "").strip().lower()
+        title_norm = re.sub(r"\s+", " ", title)
+        title_hash = hashlib.sha256(title_norm.encode()).hexdigest()[:16] if title_norm else ""
+        canonical = item.get("canonical_url") or item.get("url") or ""
+        canonical_norm = normalize_url(canonical) if canonical else ""
+
+        if digest in self._seen_content:
             from scrapy.exceptions import DropItem  # type: ignore[import-untyped]
             raise DropItem(
                 f"Duplicate content (hash={digest}): {item.get('url', '')}",
             )
-        self._seen.add(digest)
+        if canonical_norm and canonical_norm in self._seen_canonical:
+            from scrapy.exceptions import DropItem  # type: ignore[import-untyped]
+            raise DropItem(
+                f"Duplicate canonical URL ({canonical_norm}): {item.get('url', '')}",
+            )
+        if title_hash and title_hash in self._seen_title_hash:
+            from scrapy.exceptions import DropItem  # type: ignore[import-untyped]
+            raise DropItem(
+                f"Duplicate title (hash={title_hash}): {item.get('url', '')}",
+            )
+
+        self._seen_content.add(digest)
+        if canonical_norm:
+            self._seen_canonical.add(canonical_norm)
+        if title_hash:
+            self._seen_title_hash.add(title_hash)
+
+        if self._handle:
+            entry = {
+                "url": item.get("url", ""),
+                "canonical_url": canonical_norm,
+                "content_hash": digest,
+                "title_hash": title_hash,
+            }
+            self._handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self._handle.flush()
         return item
 
 

@@ -28,6 +28,7 @@ Plugin extension points::
     register_scorer(BoostPython())
 """
 
+from llmparser.auth import AuthSession
 from llmparser.extractors.block_detection import BlockResult
 from llmparser.parser import LLMParser
 from llmparser.plugins import (
@@ -39,11 +40,14 @@ from llmparser.plugins import (
 from llmparser.proxy import ProxyConfig
 from llmparser.query import FetchError, extract, fetch, fetch_batch, fetch_feed, fetch_html, parse
 from llmparser.rag import ArticleChunk, to_jsonl
+from llmparser.rate_limit import DomainRateLimiter
 
 __version__ = "0.1.0"
 __all__ = [
     "ArticleChunk",
+    "AuthSession",
     "BlockResult",
+    "DomainRateLimiter",
     "FetchError",
     "LLMParser",
     "ProxyConfig",

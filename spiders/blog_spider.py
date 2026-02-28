@@ -23,15 +23,12 @@ from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
 
 import defusedxml.ElementTree as defused_ET
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
-
 import scrapy
 from bs4 import BeautifulSoup
 from scrapy.http import Request, Response
 
 from llmparser.extractors.blocks import html_to_blocks
+from llmparser.extractors.feed import parse_feed as parse_feed_xml
 from llmparser.extractors.heuristics import ARTICLE_SCORE_THRESHOLD, Heuristics
 from llmparser.extractors.main_content import (
     ExtractionResult,
@@ -46,6 +43,10 @@ from llmparser.extractors.urlnorm import (
     normalize_url,
 )
 from llmparser.items import ArticleItem
+from llmparser.language import detect_language
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,18 @@ _PLAYWRIGHT_PAGE_METHODS: list[dict] = [
     {"method": "wait_for_load_state", "args": ["networkidle"]},
 ]
 
+# Common feed endpoints to probe (best-effort)
+_FEED_PATHS: tuple[str, ...] = (
+    "/feed.xml",
+    "/feed",
+    "/rss.xml",
+    "/rss",
+    "/blog/feed.xml",
+    "/blog/feed",
+    "/blog/rss.xml",
+    "/blog/rss",
+)
+
 
 class BlogSpider(scrapy.Spider):
     """Generic spider that crawls a single blog domain.
@@ -112,6 +125,10 @@ class BlogSpider(scrapy.Spider):
         allow_subdomains: bool = False,      # #3 multi-domain
         extra_domains: str | None = None,    # #3 multi-domain
         resume: bool = False,                # #2 incremental crawl
+        headers: dict | None = None,
+        cookies: dict | None = None,
+        delta: bool = False,
+        playwright_page_methods: list[dict] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -155,6 +172,17 @@ class BlogSpider(scrapy.Spider):
         self._skipped_count = 0
 
         self._heuristics = Heuristics()
+        self._headers = headers or {}
+        self._cookies = cookies or {}
+        self._delta_enabled = bool(delta)
+        self._etag_cache_path = Path(out_dir) / "etag_cache.json"
+        self._etag_cache: dict[str, dict[str, str]] = self._load_delta_cache()
+        self._playwright_page_methods = (
+            playwright_page_methods
+            if playwright_page_methods is not None
+            else _PLAYWRIGHT_PAGE_METHODS
+        )
+        self._seen_feeds: set[str] = set()
 
         # Clear stale skipped.jsonl from previous runs (unless resuming).
         if not resume:
@@ -204,6 +232,28 @@ class BlogSpider(scrapy.Spider):
 
         return urls
 
+    def _load_delta_cache(self) -> dict[str, dict[str, str]]:
+        if not self._delta_enabled or not self._etag_cache_path.exists():
+            return {}
+        try:
+            raw = self._etag_cache_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.warning("Could not read etag_cache.json: %s", exc)
+            return {}
+
+    def _save_delta_cache(self) -> None:
+        if not self._delta_enabled:
+            return
+        try:
+            self._etag_cache_path.write_text(
+                json.dumps(self._etag_cache, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Could not write etag_cache.json: %s", exc)
+
     def _mark_seen(self, norm: str) -> None:
         """Add URL to seen set and persist it for resume (#2, #9)."""
         self._seen_urls.add(norm)
@@ -234,6 +284,11 @@ class BlogSpider(scrapy.Spider):
                 dont_filter=True,
             )
 
+        # Try common feed endpoints
+        for feed_path in _FEED_PATHS:
+            feed_url = base + feed_path
+            yield from self._enqueue_feed(feed_url, priority=9)
+
         # Always also crawl the start URL directly
         norm = normalize_url(self.start_url)
         self._mark_seen(norm)
@@ -250,6 +305,23 @@ class BlogSpider(scrapy.Spider):
 
     def start_requests(self) -> Iterator[Request]:
         yield from self._iter_start_requests()
+
+    def _enqueue_feed(self, feed_url: str, priority: int = 5) -> Iterator[Request]:
+        norm = normalize_url(feed_url)
+        if norm in self._seen_feeds:
+            return iter(())
+        self._seen_feeds.add(norm)
+        return iter(
+            [
+                Request(
+                    feed_url,
+                    callback=self.parse_feed,
+                    errback=self._feed_errback,
+                    priority=priority,
+                    dont_filter=True,
+                ),
+            ],
+        )
 
     # ------------------------------------------------------------------
     # Sitemap parsing
@@ -302,6 +374,28 @@ class BlogSpider(scrapy.Spider):
     def _sitemap_errback(self, failure: object) -> None:
         logger.debug("Sitemap fetch failed (expected if no sitemap): %s", failure)
 
+    def _feed_errback(self, failure: object) -> None:
+        logger.debug("Feed fetch failed (expected if no feed): %s", failure)
+
+    def parse_feed(self, response: Response) -> Iterator[Request]:
+        if response.status != 200:
+            return
+        entries = parse_feed_xml(response.text, base_url=response.url)
+        if not entries:
+            return
+        for entry in entries:
+            url = entry.url
+            norm = normalize_url(url)
+            if norm in self._seen_urls:
+                continue
+            if not self._should_crawl(url):
+                continue
+            if self._pages_crawled >= self.max_pages:
+                return
+            self._mark_seen(norm)
+            self._pages_crawled += 1
+            yield self._make_request(url, callback=self.parse, meta={"depth": 0})
+
     # ------------------------------------------------------------------
     # Main parse callback
     # ------------------------------------------------------------------
@@ -314,6 +408,9 @@ class BlogSpider(scrapy.Spider):
         is_playwright = response.meta.get("playwright", False)
 
         # Skip non-200 or non-HTML responses
+        if response.status == 304:
+            self._log_skip(url, "not_modified_304")
+            return
         if response.status != 200:
             self._log_skip(url, f"http_status_{response.status}")
             return
@@ -332,6 +429,18 @@ class BlogSpider(scrapy.Spider):
                 logger.debug("Triggering Playwright render for %s", url)
                 yield self._make_playwright_request(url, depth)
                 return
+
+        if self._delta_enabled:
+            norm = normalize_url(url)
+            etag = response.headers.get(b"ETag")
+            last_modified = response.headers.get(b"Last-Modified")
+            if etag or last_modified:
+                self._etag_cache[norm] = {
+                    "etag": etag.decode("utf-8", errors="ignore") if etag else "",
+                    "last_modified": (
+                        last_modified.decode("utf-8", errors="ignore") if last_modified else ""
+                    ),
+                }
 
         # Parse HTML once — shared across scoring, extraction, link discovery (#1)
         try:
@@ -430,6 +539,7 @@ class BlogSpider(scrapy.Spider):
 
         canonical = meta.get("canonical_url") or url
         title = meta.get("title") or self._fallback_title(html)
+        language = meta.get("language") or detect_language(content_text)
 
         return ArticleItem(
             url=url,
@@ -439,7 +549,7 @@ class BlogSpider(scrapy.Spider):
             published_at=meta.get("published_at"),
             updated_at=meta.get("updated_at"),
             site_name=meta.get("site_name"),
-            language=meta.get("language"),
+            language=language,
             tags=meta.get("tags") or [],
             summary=meta.get("summary"),
             content_markdown=content_md,
@@ -519,6 +629,20 @@ class BlogSpider(scrapy.Spider):
                     meta={"depth": current_depth + 1},
                     priority=5,  # Higher than regular BFS (default 0)
                 )
+
+        # Discover RSS/Atom feeds from <link rel="alternate"> tags
+        for link_el in soup.find_all("link", rel=True):
+            rel_val = link_el.get("rel")
+            if not (isinstance(rel_val, list) and "alternate" in rel_val):
+                continue
+            ltype = str(link_el.get("type") or "").lower()
+            if "rss" not in ltype and "atom" not in ltype:
+                continue
+            href = str(link_el.get("href") or "").strip()
+            if not href:
+                continue
+            absolute = urljoin(response.url, href)
+            yield from self._enqueue_feed(absolute, priority=7)
 
         for a in soup.find_all("a", href=True):
             href = str(a.get("href") or "").strip()
@@ -617,21 +741,51 @@ class BlogSpider(scrapy.Spider):
         m = meta or {}
         if self.render_js == "always":
             m["playwright"] = True
-            m["playwright_page_methods"] = _PLAYWRIGHT_PAGE_METHODS
-        return Request(url, callback=callback, meta=m, priority=priority, **kwargs)
+            m["playwright_page_methods"] = self._playwright_page_methods
+
+        headers = dict(self._headers)
+        if self._delta_enabled:
+            norm = normalize_url(url)
+            cached = self._etag_cache.get(norm)
+            if cached:
+                if cached.get("etag"):
+                    headers["If-None-Match"] = cached["etag"]
+                if cached.get("last_modified"):
+                    headers["If-Modified-Since"] = cached["last_modified"]
+
+        return Request(
+            url,
+            callback=callback,
+            meta=m,
+            priority=priority,
+            headers=headers or None,
+            cookies=self._cookies or None,
+            **kwargs,
+        )
 
     def _make_playwright_request(self, url: str, depth: int) -> Request:
+        headers = dict(self._headers)
+        if self._delta_enabled:
+            norm = normalize_url(url)
+            cached = self._etag_cache.get(norm)
+            if cached:
+                if cached.get("etag"):
+                    headers["If-None-Match"] = cached["etag"]
+                if cached.get("last_modified"):
+                    headers["If-Modified-Since"] = cached["last_modified"]
         return Request(
             url,
             callback=self.parse,
             meta={
                 "playwright": True,
                 "playwright_retry": True,
-                "playwright_page_methods": _PLAYWRIGHT_PAGE_METHODS,
+                "playwright_page_methods": self._playwright_page_methods,
                 "depth": depth,
             },
             dont_filter=True,
             priority=3,
+            headers=headers or None,
+            cookies=self._cookies or None,
         )
 
     # ------------------------------------------------------------------
@@ -665,6 +819,8 @@ class BlogSpider(scrapy.Spider):
                 self._seen_urls_handle.close()
             except OSError as exc:
                 logger.warning("Could not close seen_urls.txt: %s", exc)
+
+        self._save_delta_cache()
 
         logger.info(
             "Spider closed (%s): crawled=%d skipped=%d",

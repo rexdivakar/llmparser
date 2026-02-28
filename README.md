@@ -128,10 +128,17 @@ is generic HTML semantics — which means LLMParser works on sites that don't ex
 - **Generic extraction** — readability-lxml + trafilatura best-of-two → DOM heuristic cascade; zero site-specific selectors
 - **Playwright 4-phase rendering** — load → networkidle → DOM hydration → accordion expansion
 - **RSS/Atom feed support** — `fetch_feed()` parses any feed and extracts each linked article
+- **Feed discovery** — automatically probes common feed endpoints and `<link rel="alternate">` feeds in crawls
 - **Pagination auto-follow** — detects `<link rel="next">` and traverses paginated archives
 - **Incremental resume** — skip previously-seen URLs; cross-crawl dedup via `index.json`
 - **Concurrent batch API** — `fetch_batch()` fetches multiple URLs in parallel
 - **Block-aware proxy retry** — retries on bot blocks and HTTP 401/403/407 when proxies are provided
+- **Auth-ready** — inject headers/cookies and refresh bearer tokens for 401s
+- **Per-domain rate limiting** — configurable RPS for single URL and batch fetches
+- **Delta mode** — conditional requests using ETag/Last-Modified (spider)
+- **Telemetry export** — `out/telemetry.json` with response codes, latency, block rate
+- **Crawl profiles** — YAML per-domain config for limits, auth, and Playwright actions
+- **Language fallback** — auto-detect language when metadata is missing
 - **Polite crawling** — robots.txt, auto-throttle, Retry-After header support
 - **Structured output** — JSON + Markdown per page; `index.json` + `index.csv` summaries
 - **Native RAG integration** — `chunk_article()` with paragraph/fixed/sentence strategies; LangChain + LlamaIndex adapters; JSONL export for Pinecone/Chroma/Weaviate/Qdrant
@@ -188,7 +195,10 @@ out/
 │   └── ...
 ├── index.json                     # Summary of all pages (sorted by date)
 ├── index.csv                      # Same summary as CSV
+├── dedup.jsonl                    # Cross-run dedup hashes (content/title/canonical)
+├── etag_cache.json                # ETag/Last-Modified cache (delta mode)
 ├── skipped.jsonl                  # Skipped URLs with reasons
+├── telemetry.json                 # Crawl telemetry (optional)
 └── summary.txt                    # Plain-text crawl report
 ```
 
@@ -210,6 +220,27 @@ print(article.word_count)
 print(article.content_markdown)   # clean Markdown
 
 data = article.model_dump()       # plain dict, JSON-serialisable
+```
+
+### Auth, rate limit, and Playwright actions
+
+```python
+from llmparser import AuthSession, fetch
+
+auth = AuthSession(
+    headers={"X-API-Key": "secret"},
+    cookies={"sessionid": "abc123"},
+)
+
+article = fetch(
+    "https://example.com/private/post",
+    auth=auth,
+    rate_limit_per_domain=2.0,  # 2 requests/sec per domain
+    playwright_page_methods=[
+        {"method": "evaluate", "args": ["window.scrollTo(0, document.body.scrollHeight)"]},
+        {"method": "wait_for_timeout", "args": [1000]},
+    ],
+)
 ```
 
 ### Force Playwright
@@ -475,6 +506,16 @@ Resume / caching:
 Display:
   --log-level {DEBUG,INFO,WARNING,ERROR}
   --progress             Show live Rich progress bar
+  --telemetry            Write crawl telemetry to out/telemetry.json
+  --delta                Conditional requests using ETag/Last-Modified
+  --download-delay SEC   Download delay between requests (seconds)
+  --no-autothrottle      Disable Scrapy AutoThrottle
+  --rate-limit RPS       Per-domain rate limit in requests/sec
+  --header HEADER        Extra request header (repeatable)
+  --cookie COOKIE        Cookie in name=value form (repeatable)
+  --profile FILE         YAML crawl profile (per-domain settings)
+  --playwright-actions FILE
+                         JSON file with Playwright page method calls
 ```
 
 ### Examples
@@ -500,6 +541,31 @@ python -m llmparser --url https://example.com/ \
 # Fast development iteration with caching
 python -m llmparser --url https://example.com/ \
   --log-level DEBUG --max-pages 10 --cache
+
+# Use a YAML crawl profile
+python -m llmparser --url https://example.com/ --profile ./profiles.yaml
+```
+
+Example `profiles.yaml`:
+
+```yaml
+default:
+  max_pages: 200
+  max_depth: 8
+
+domains:
+  example.com:
+    rate_limit: 2.0
+    delta: true
+    headers:
+      Authorization: "Bearer YOUR_TOKEN"
+    cookies:
+      sessionid: "abc123"
+    playwright_actions:
+      - method: evaluate
+        args: ["window.scrollTo(0, document.body.scrollHeight)"]
+      - method: wait_for_timeout
+        args: [1000]
 ```
 
 ---

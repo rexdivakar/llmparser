@@ -66,6 +66,24 @@ def _build_parser() -> argparse.ArgumentParser:
                         ))
     parser.add_argument("--progress", action="store_true", default=False,
                         help="Show a live Rich progress bar (sets log-level to WARNING)")
+    parser.add_argument("--telemetry", action="store_true", default=False,
+                        help="Write crawl telemetry to out/telemetry.json")
+    parser.add_argument("--delta", action="store_true", default=False,
+                        help="Conditional requests using If-None-Match/If-Modified-Since")
+    parser.add_argument("--download-delay", type=float, default=None, metavar="SEC",
+                        help="Download delay between requests (seconds)")
+    parser.add_argument("--no-autothrottle", action="store_true", default=False,
+                        help="Disable Scrapy AutoThrottle")
+    parser.add_argument("--rate-limit", type=float, default=None, metavar="RPS",
+                        help="Per-domain rate limit in requests/sec (default: off)")
+    parser.add_argument("--header", action="append", default=None, metavar="HEADER",
+                        help="Extra request header (repeatable), e.g. 'Authorization: Bearer ...'")
+    parser.add_argument("--cookie", action="append", default=None, metavar="COOKIE",
+                        help="Cookie in name=value form (repeatable)")
+    parser.add_argument("--profile", default=None, metavar="FILE",
+                        help="YAML crawl profile to apply per-domain settings")
+    parser.add_argument("--playwright-actions", default=None, metavar="FILE",
+                        help="JSON file with Playwright page method calls")
     return parser
 
 
@@ -81,6 +99,54 @@ def _validate_regex_args(args: argparse.Namespace) -> str | None:
             except re.error as exc:
                 return f"Invalid {flag} pattern {pattern!r}: {exc}"
     return None
+
+
+def _parse_headers(raw_headers: list[str] | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if not raw_headers:
+        return headers
+    for entry in raw_headers:
+        if ":" not in entry:
+            continue
+        name, value = entry.split(":", 1)
+        headers[name.strip()] = value.strip()
+    return headers
+
+
+def _parse_cookies(raw_cookies: list[str] | None) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    if not raw_cookies:
+        return cookies
+    for entry in raw_cookies:
+        if "=" not in entry:
+            continue
+        name, value = entry.split("=", 1)
+        cookies[name.strip()] = value.strip()
+    return cookies
+
+
+def _load_playwright_actions(path: str | None) -> list[dict] | None:
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _apply_profile(
+    args: argparse.Namespace,
+    profile: dict,
+    parser: argparse.ArgumentParser,
+) -> None:
+    if not profile:
+        return
+    for key, value in profile.items():
+        if not hasattr(args, key):
+            continue
+        default = parser.get_default(key)
+        if getattr(args, key) == default:
+            setattr(args, key, value)
 
 
 def _check_playwright_available() -> bool:
@@ -133,6 +199,9 @@ def _print_banner(args: argparse.Namespace) -> None:
         from rich.panel import Panel
 
         console = Console()
+        delay_display = (
+            str(args.download_delay) if args.download_delay is not None else "default"
+        )
         console.print(
             Panel.fit(
                 f"[bold cyan]LLMParser[/bold cyan]\n"
@@ -146,7 +215,12 @@ def _print_banner(args: argparse.Namespace) -> None:
                 f"HTTP cache:     {'on' if args.cache else 'off'}\n"
                 f"Resume:         {'yes' if args.resume else 'no'}\n"
                 f"Subdomains:     {'allow' if args.allow_subdomains else 'block'}\n"
-                f"Extra domains:  {args.extra_domains or '—'}",
+                f"Extra domains:  {args.extra_domains or '—'}\n"
+                f"Delta:          {'on' if args.delta else 'off'}\n"
+                f"Download delay: {delay_display}\n"
+                f"AutoThrottle:   {'off' if args.no_autothrottle else 'on'}\n"
+                f"Rate limit:     {args.rate_limit or '—'} rps\n"
+                f"Telemetry:      {'on' if args.telemetry else 'off'}",
                 border_style="cyan",
                 title="[bold]Configuration[/bold]",
             ),
@@ -158,6 +232,17 @@ def _print_banner(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    profile: dict | None = None
+    if args.profile:
+        try:
+            from llmparser.profiles import load_profile
+
+            profile = load_profile(args.profile, args.url)
+            _apply_profile(args, profile, parser)
+        except Exception as exc:
+            print(f"ERROR: Could not load profile {args.profile}: {exc}", file=sys.stderr)
+            return 1
 
     # --- #8 Validate regex flags early, before any heavy imports ---
     regex_err = _validate_regex_args(args)
@@ -194,6 +279,19 @@ def main(argv: list[str] | None = None) -> int:
     scrapy_settings.set("ROBOTSTXT_OBEY", not args.ignore_robots, priority="cmdline")
     scrapy_settings.set("OUTPUT_DIR", str(out_dir), priority="cmdline")
     scrapy_settings.set("SPIDER_MAX_PAGES", args.max_pages, priority="cmdline")
+    scrapy_settings.set("TELEMETRY_ENABLED", bool(args.telemetry), priority="cmdline")
+
+    if args.download_delay is not None:
+        scrapy_settings.set("DOWNLOAD_DELAY", float(args.download_delay), priority="cmdline")
+
+    if args.no_autothrottle:
+        scrapy_settings.set("AUTOTHROTTLE_ENABLED", False, priority="cmdline")
+
+    if args.rate_limit:
+        delay = max(0.01, 1.0 / float(args.rate_limit))
+        scrapy_settings.set("DOWNLOAD_DELAY", delay, priority="cmdline")
+        scrapy_settings.set("CONCURRENT_REQUESTS_PER_DOMAIN", 1, priority="cmdline")
+        scrapy_settings.set("AUTOTHROTTLE_TARGET_CONCURRENCY", 1.0, priority="cmdline")
 
     # --- #7 HTTP cache ---
     if args.cache:
@@ -224,6 +322,19 @@ def main(argv: list[str] | None = None) -> int:
                 "Install with: playwright install chromium",
             )
 
+    headers = _parse_headers(args.header)
+    cookies = _parse_cookies(args.cookie)
+    playwright_actions = _load_playwright_actions(args.playwright_actions)
+    if profile:
+        profile_headers = profile.get("headers", {})
+        profile_cookies = profile.get("cookies", {})
+        if isinstance(profile_headers, dict):
+            headers = {**profile_headers, **headers}
+        if isinstance(profile_cookies, dict):
+            cookies = {**profile_cookies, **cookies}
+        if not playwright_actions and isinstance(profile.get("playwright_actions"), list):
+            playwright_actions = profile.get("playwright_actions")
+
     try:
         from scrapy.crawler import CrawlerProcess
 
@@ -241,6 +352,10 @@ def main(argv: list[str] | None = None) -> int:
             allow_subdomains=args.allow_subdomains,      # #3
             extra_domains=args.extra_domains,             # #3
             resume=args.resume,                           # #2
+            headers=headers,
+            cookies=cookies,
+            delta=args.delta,
+            playwright_page_methods=playwright_actions,
         )
         process.start()
     except Exception:

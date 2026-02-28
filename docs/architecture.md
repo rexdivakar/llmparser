@@ -29,6 +29,10 @@ The central crawl orchestrator. A single generic Scrapy spider that:
 - Parses `<loc>` tags recursively (handles sitemap index → child sitemaps)
 - All sitemap URLs bypass BFS depth limit but respect `max_pages`
 
+**Phase 1b – Feed discovery:**
+- Probes common feed endpoints (`/feed.xml`, `/rss.xml`, `/blog/feed`, …)
+- Discovers `<link rel="alternate">` RSS/Atom feeds while crawling
+
 **Phase 2 – Pagination Links (`<link rel="next">`):**
 - `_discover_links()` checks `<head>` for `<link rel="next">` before scanning `<a>` tags
 - Matched pagination URLs are enqueued at priority 5 (vs default 0) so archives are fully traversed
@@ -61,6 +65,7 @@ Canonical URL from `<link rel="canonical">` used where present.
 Playwright-retry requests use `dont_filter=True` + `playwright_retry` meta flag.
 
 **Content dedup:** `ContentHashDedupPipeline` (priority 100) drops articles whose first 5,000 chars of `content_text` hash to a previously-seen SHA-256 prefix (handles syndicated posts / canonical mismatches).
+**Cross-run dedup:** persistent `dedup.jsonl` stores canonical URL, title hash, and content hash across crawls.
 
 ### 5. Adaptive Page Classifier (`llmparser/extractors/adaptive.py`)
 
@@ -295,6 +300,7 @@ max_retries = 3
 - `CONCURRENT_REQUESTS = 8` default; tunable via `--concurrency`
 - Playwright only for JS-heavy pages (typically < 5% of a blog)
 - HTTP cache (`--cache`) eliminates repeated fetches during development
+- Delta mode (`--delta`) sends conditional requests using ETag/Last-Modified
 - Sitemap pre-fetches all article URLs without crawling listing pages
 
 **Failure modes:**
@@ -310,3 +316,20 @@ max_retries = 3
 | Empty extraction (< 10 words) | Item dropped in validation pipeline; logged to `out/skipped.jsonl` |
 | Duplicate content | Dropped by ContentHashDedupPipeline; first occurrence wins |
 | `<template>` GDPR overlays | Stripped via regex before any HTML parsing |
+
+---
+
+## Telemetry
+
+When `--telemetry` is enabled, the spider writes `out/telemetry.json` with:
+- response codes and counts
+- average download latency
+- pages/sec
+- block rate (lightweight block detection on HTML responses)
+
+---
+
+## Profiles
+
+YAML crawl profiles allow per-domain overrides for limits, auth headers/cookies,
+rate limits, and Playwright actions. Use `--profile profiles.yaml`.

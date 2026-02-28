@@ -24,6 +24,11 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from llmparser.auth import AuthSession
+    from llmparser.rate_limit import DomainRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +420,9 @@ def adaptive_fetch_html(
     timeout: int = 30,
     user_agent: str | None = None,
     proxy: str | None = None,
+    auth: AuthSession | None = None,
+    rate_limiter: DomainRateLimiter | None = None,
+    playwright_page_methods: list[dict] | None = None,
 ) -> FetchResult:
     """Fetch *url* using the best available strategy.
 
@@ -438,7 +446,14 @@ def adaptive_fetch_html(
     from llmparser.query import fetch_html as _static
 
     # ── Step 1: Static fetch (always first) ──────────────────────────────────
-    html = _static(url, timeout=timeout, user_agent=user_agent, proxy=proxy)
+    html = _static(
+        url,
+        timeout=timeout,
+        user_agent=user_agent,
+        proxy=proxy,
+        auth=auth,
+        rate_limiter=rate_limiter,
+    )
     classification = classify_page(html, url)
     strategy = classification.recommended_strategy
 
@@ -466,6 +481,8 @@ def adaptive_fetch_html(
                 timeout=timeout,
                 user_agent=user_agent,
                 proxy=proxy,
+                auth=auth,
+                rate_limiter=rate_limiter,
             )
             if _raw_word_count(amp_html) > classification.signals.body_word_count:
                 logger.info("AMP strategy succeeded for %s", url)
@@ -480,7 +497,14 @@ def adaptive_fetch_html(
     # ── Step 3: Mobile User-Agent ─────────────────────────────────────────────
     if strategy == "mobile_ua":
         try:
-            mob_html = _static(url, timeout=timeout, user_agent=_MOBILE_UA, proxy=proxy)
+            mob_html = _static(
+                url,
+                timeout=timeout,
+                user_agent=_MOBILE_UA,
+                proxy=proxy,
+                auth=auth,
+                rate_limiter=rate_limiter,
+            )
             if _raw_word_count(mob_html) > classification.signals.body_word_count * 1.3:
                 logger.info("Mobile-UA strategy succeeded for %s", url)
                 return FetchResult(
@@ -493,7 +517,15 @@ def adaptive_fetch_html(
 
     # ── Step 4: Playwright (JS render) ───────────────────────────────────────
     if strategy == "playwright":
-        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy, user_agent=user_agent)
+        pw_html = _try_playwright(
+            url,
+            timeout=timeout,
+            proxy=proxy,
+            user_agent=user_agent,
+            auth=auth,
+            page_methods=playwright_page_methods,
+            rate_limiter=rate_limiter,
+        )
         if pw_html and _raw_word_count(pw_html) > classification.signals.body_word_count:
             logger.info("Playwright strategy succeeded for %s", url)
             return FetchResult(
@@ -507,7 +539,15 @@ def adaptive_fetch_html(
         strategy != "playwright"
         and classification.signals.body_word_count < _MIN_CONTENT_WORDS
     ):
-        pw_html = _try_playwright(url, timeout=timeout, proxy=proxy, user_agent=user_agent)
+        pw_html = _try_playwright(
+            url,
+            timeout=timeout,
+            proxy=proxy,
+            user_agent=user_agent,
+            auth=auth,
+            page_methods=playwright_page_methods,
+            rate_limiter=rate_limiter,
+        )
         if pw_html and _raw_word_count(pw_html) > classification.signals.body_word_count:
             logger.info("Playwright fallback succeeded for %s", url)
             return FetchResult(
@@ -557,6 +597,9 @@ def _try_playwright(
     timeout: int = 30,
     proxy: str | None = None,
     user_agent: str | None = None,
+    auth: AuthSession | None = None,
+    page_methods: list[dict] | None = None,
+    rate_limiter: DomainRateLimiter | None = None,
 ) -> str | None:
     """Attempt a Playwright fetch; return HTML string or None on any failure."""
     try:
@@ -566,6 +609,9 @@ def _try_playwright(
             timeout=max(timeout, 60),
             proxy=proxy,
             user_agent=user_agent,
+            auth=auth,
+            page_methods=page_methods,
+            rate_limiter=rate_limiter,
         )
     except ImportError:
         if not _playwright_warned["value"]:
